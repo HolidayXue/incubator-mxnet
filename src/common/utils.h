@@ -43,8 +43,12 @@
 #include <thread>
 #include <algorithm>
 #include <functional>
+#include <limits>
 
 #include "../operator/mxnet_op.h"
+#if MXNET_USE_MKLDNN == 1
+#include "../operator/nn/mkldnn/mkldnn_base-inl.h"
+#endif
 
 namespace mxnet {
 namespace common {
@@ -114,10 +118,10 @@ void CheckFormatCSRImpl(const RunContext &rctx, const NDArray &input,
   using namespace op::mxnet_op;
   CHECK_EQ(input.storage_type(), kCSRStorage)
           << "CheckFormatCSRImpl is for CSRNDArray";
-  const TShape shape = input.shape();
-  const TShape idx_shape = input.aux_shape(csr::kIdx);
-  const TShape indptr_shape = input.aux_shape(csr::kIndPtr);
-  const TShape storage_shape = input.storage_shape();
+  const mxnet::TShape shape = input.shape();
+  const mxnet::TShape idx_shape = input.aux_shape(csr::kIdx);
+  const mxnet::TShape indptr_shape = input.aux_shape(csr::kIndPtr);
+  const mxnet::TShape storage_shape = input.storage_shape();
   if ((shape.ndim() != 2) ||
       (idx_shape.ndim() != 1 || indptr_shape.ndim() != 1 || storage_shape.ndim() != 1) ||
       (indptr_shape[0] != shape[0] + 1) ||
@@ -168,7 +172,7 @@ void CheckFormatRSPImpl(const RunContext &rctx, const NDArray &input,
   using namespace op::mxnet_op;
   CHECK_EQ(input.storage_type(), kRowSparseStorage)
           << "CheckFormatRSPImpl is for RSPNDArray";
-  const TShape idx_shape = input.aux_shape(rowsparse::kIdx);
+  const mxnet::TShape idx_shape = input.aux_shape(rowsparse::kIdx);
   if (idx_shape[0] != input.storage_shape()[0]) {
     MSHADOW_TYPE_SWITCH(err_cpu.type_flag_, DType, {
       DType* err = err_cpu.dptr<DType>();
@@ -318,6 +322,36 @@ inline bool ContainsOnlyStorage(const std::vector<NDArray>& ndarrays,
   return false;
 }
 
+/*! \brief returns true if storage type of any array in `ndarrays`
+ *         is the same as the target `stype`. false is returned for empty inputs.
+ */
+inline bool ContainsStorageType(const std::vector<NDArray>& ndarrays,
+                                const NDArrayStorageType stype) {
+  if (!ndarrays.empty()) {
+    for (const auto& nd : ndarrays) {
+      if (nd.storage_type() == stype) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/*! \brief returns true if any storage type `ndstype` in `ndstypes`
+ *         is the same as the target `stype`. false is returned for empty inputs.
+ */
+inline bool ContainsStorageType(const std::vector<int>& ndstypes,
+                                const NDArrayStorageType stype) {
+  if (!ndstypes.empty()) {
+    for (const auto& ndstype : ndstypes) {
+      if (ndstype == stype) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /*! \brief get string representation of dispatch_mode */
 inline std::string dispatch_mode_string(const DispatchMode x) {
   switch (x) {
@@ -432,10 +466,19 @@ inline void LogStorageFallback(const nnvm::NodeAttrs& attrs,
     "for execution. You're seeing this warning message because the operator above is unable "
     "to process the given ndarrays with specified storage types, context and parameter. "
     "Temporary dense ndarrays are generated in order to execute the operator. "
+    "This does not affect the correctness of the programme. "
     "You can set environment variable MXNET_STORAGE_FALLBACK_LOG_VERBOSE to "
     "0 to suppress this warning.";
   os << "\nStorage type fallback detected:\n" << op_str << warning;
   LogOnce(os.str());
+#if MXNET_USE_MKLDNN == 1
+  if (!MKLDNNEnvSet()) common::LogOnce("MXNET_MKLDNN_ENABLED flag is off. "
+                                       "You can re-enable by setting MXNET_MKLDNN_ENABLED=1");
+  if (GetMKLDNNCacheSize() != -1) common::LogOnce("MXNET_MKLDNN_CACHE_NUM is set."
+                                       "Should only be set if "
+                                       "your model has variable input shapes, "
+                                       "as cache size may grow unbounded");
+#endif
 }
 
 // heuristic to dermine number of threads per GPU
@@ -613,6 +656,81 @@ FCompType GetFCompute(const nnvm::Op* op, const std::string& name,
   } else {
     LOG(FATAL) << "Unknown device mask";
     return nullptr;
+  }
+}
+
+/*!
+ * \brief Return the max integer value representable in the type `T` without loss of precision.
+ */
+template <typename T>
+constexpr size_t MaxIntegerValue() {
+  return std::is_integral<T>::value ?
+    std::numeric_limits<T>::max():
+    size_t(2) << (std::numeric_limits<T>::digits - 1);
+}
+
+template <>
+constexpr size_t MaxIntegerValue<mshadow::half::half_t>() {
+  return size_t(2) << 10;
+}
+
+MSHADOW_XINLINE int ilog2ul(size_t a) {
+  int k = 1;
+  while (a >>= 1) ++k;
+  return k;
+}
+
+MSHADOW_XINLINE int ilog2ui(unsigned int a) {
+  int k = 1;
+  while (a >>= 1) ++k;
+  return k;
+}
+
+/*!
+ * \brief Return an NDArray of all zeros.
+ */
+inline NDArray InitZeros(const NDArrayStorageType stype, const mxnet::TShape &shape,
+                         const Context &ctx, const int dtype) {
+  // NDArray with default storage
+  if (stype == kDefaultStorage) {
+    NDArray ret(shape, ctx, false, dtype);
+    ret = 0;
+    return ret;
+  }
+  // NDArray with non-default storage. Storage allocation is always delayed.
+  return NDArray(stype, shape, ctx, true, dtype);
+}
+
+/*!
+ * \brief Helper to add a NDArray of zeros to a std::vector.
+ */
+inline void EmplaceBackZeros(const NDArrayStorageType stype, const mxnet::TShape &shape,
+                             const Context &ctx, const int dtype,
+                             std::vector<NDArray> *vec) {
+  // NDArray with default storage
+  if (stype == kDefaultStorage) {
+    vec->emplace_back(shape, ctx, false, dtype);
+    vec->back() = 0;
+  } else {
+    // NDArray with non-default storage. Storage allocation is always delayed.
+    vec->emplace_back(stype, shape, ctx, true, dtype);
+  }
+}
+
+
+/*!
+ * \brief parallelize copy by OpenMP.
+ */
+template<typename DType>
+inline void ParallelCopy(DType* dst, const DType* src, index_t size) {
+  static index_t copy_block_size = dmlc::GetEnv("MXNET_CPU_PARALLEL_COPY_SIZE", 200000);
+  if (size >= copy_block_size) {
+    #pragma omp parallel for num_threads(engine::OpenMP::Get()->GetRecommendedOMPThreadCount())
+    for (index_t i = 0; i < size; ++i) {
+      dst[i] = src[i];
+    }
+  } else {
+    std::memcpy(dst, src, sizeof(DType) * size);
   }
 }
 

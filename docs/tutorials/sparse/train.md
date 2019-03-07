@@ -1,3 +1,20 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 
 # Train a Linear Regression Model with Sparse Symbols
 In previous tutorials, we introduced `CSRNDArray` and `RowSparseNDArray`,
@@ -36,6 +53,14 @@ We can specify the `stype` of a variable as "csr" or "row_sparse" to hold sparse
 
 ```python
 import mxnet as mx
+import numpy as np
+import random
+
+# set the seeds for repeatability
+random.seed(42)
+np.random.seed(42)
+mx.random.seed(42) 
+
 # Create a variable to hold an NDArray
 a = mx.sym.Variable('a')
 # Create a variable to hold a CSRNDArray
@@ -48,7 +73,7 @@ c = mx.sym.Variable('c', stype='row_sparse')
 
 
 
-    (<Symbol a>, <Symbol b>, <Symbol c>)
+`(<Symbol a>, <Symbol b>, <Symbol c>)` <!--notebook-skip-line-->
 
 
 
@@ -182,18 +207,18 @@ fallback_log = fallback_exec.outputs[1]
 
 
 
-### Inspecting Storage Types of the Symbol Graph (Work in Progress)
+### Inspecting Storage Types of the Symbol Graph
 
 When the environment variable `MXNET_INFER_STORAGE_TYPE_VERBOSE_LOGGING` is set to `1`, MXNet will log the storage type information of
 operators' inputs and outputs in the computation graph. For example, we can inspect the storage types of
-a linear classification network with sparse operators as follows:
+a linear classification network with sparse operators. Uncomment the line below and inspect your console.:
 
 
 ```python
 # Set logging level for executor
 import mxnet as mx
 import os
-os.environ['MXNET_INFER_STORAGE_TYPE_VERBOSE_LOGGING'] = "1"
+#os.environ['MXNET_INFER_STORAGE_TYPE_VERBOSE_LOGGING'] = "1"
 # Data in csr format
 data = mx.sym.var('data', stype='csr', shape=(32, 10000))
 # Weight in row_sparse format
@@ -299,22 +324,15 @@ for epoch in range(10):
 assert metric.get()[1] < 1, "Achieved MSE (%f) is larger than expected (1.0)" % metric.get()[1]    
 ```
 
-    Epoch 0, Metric = ('mse', 886.16457029229127)
-    Epoch 1, Metric = ('mse', 173.16523056503445)
-    Epoch 2, Metric = ('mse', 71.625164168341811)
-    Epoch 3, Metric = ('mse', 29.625375983519298)
-    Epoch 4, Metric = ('mse', 12.45004676561909)
-    Epoch 5, Metric = ('mse', 6.9090727975622368)
-    Epoch 6, Metric = ('mse', 3.0759215722750142)
-    Epoch 7, Metric = ('mse', 1.3106610134811276)
-    Epoch 8, Metric = ('mse', 0.63063102482907718)
-    Epoch 9, Metric = ('mse', 0.35979430613957991)
+`Epoch 9, Metric = ('mse', 0.35979430613957991)`<!--notebook-skip-line-->
 
 
 
 
-### Training the model with multiple machines
+### Training the model with multiple machines or multiple devices
 
-To train a sparse model with multiple machines, please refer to the example in [mxnet/example/sparse/](https://github.com/apache/incubator-mxnet/tree/master/example/sparse)
+Distributed training with `row_sparse` weights and gradients are supported in MXNet, which significantly reduces communication cost for large models. To train a sparse model with multiple machines, you need to call `prepare` before `forward`, or `save_checkpoint`.
+Please refer to the example in [mxnet/example/sparse/linear_classification](https://github.com/apache/incubator-mxnet/tree/master/example/sparse/linear_classification)
+for more details.
 
 <!-- INSERT SOURCE DOWNLOAD BUTTONS -->

@@ -121,6 +121,23 @@ double EvaluateWorloads(const std::vector<Workload>& workloads,
   return dmlc::GetTime() - t;
 }
 
+TEST(Engine, start_stop) {
+  const int num_engine = 3;
+  std::vector<mxnet::Engine*> engine(num_engine);
+  engine[0] = mxnet::engine::CreateNaiveEngine();
+  engine[1] = mxnet::engine::CreateThreadedEnginePooled();
+  engine[2] = mxnet::engine::CreateThreadedEnginePerDevice();
+  std::string type_names[3] = {"NaiveEngine", "ThreadedEnginePooled", "ThreadedEnginePerDevice"};
+
+  for (int i = 0; i < num_engine; ++i) {
+    LOG(INFO) << "Stopping: " << type_names[i];
+    engine[i]->Stop();
+    LOG(INFO) << "Stopped: " << type_names[i] << " Starting...";
+    engine[i]->Start();
+    LOG(INFO) << "Started: " << type_names[i] << " Done...";
+  }
+}
+
 TEST(Engine, RandSumExpr) {
   std::vector<Workload> workloads;
   int num_repeat = 5;
@@ -256,6 +273,64 @@ TEST(Engine, basics) {
   var = nullptr;
   oprs.clear();
   LOG(INFO) << "All pass";
+}
+
+TEST(Engine, VarVersion) {
+  const size_t num_engines = 3;
+  std::vector<mxnet::Engine*> engines(num_engines);
+  engines[0] = mxnet::engine::CreateNaiveEngine();
+  engines[1] = mxnet::engine::CreateThreadedEnginePooled();
+  engines[2] = mxnet::engine::CreateThreadedEnginePerDevice();
+  std::string type_names[3] = {"NaiveEngine", "ThreadedEnginePooled", "ThreadedEnginePerDevice"};
+  for (size_t k = 0; k < num_engines; ++k) {
+    auto engine = engines[k];
+    std::vector<mxnet::Engine::OprHandle> oprs;
+
+    LOG(INFO) << "Testing var as a read dependency in " << type_names[k];
+    auto var = engine->NewVariable();
+    EXPECT_EQ(var->version(), 0U);
+    for (int i = 0; i < 10; ++i) {
+      oprs.push_back(engine->NewOperator(
+          [i](mxnet::RunContext ctx, mxnet::Engine::CallbackOnComplete cb) {
+            Foo(ctx, i);
+            cb();
+          },
+          {var}, {}));
+      engine->Push(oprs.at(i), mxnet::Context{});
+    }
+    engine->WaitForAll();
+    EXPECT_EQ(var->version(), 0U);
+    for (auto&& i : oprs) {
+      engine->DeleteOperator(i);
+    }
+    engine->DeleteVariable([](mxnet::RunContext) {}, mxnet::Context{}, var);
+    engine->WaitForAll();
+
+    LOG(INFO) << "Testing var as a write dependency in " << type_names[k];
+    var = engine->NewVariable();
+    EXPECT_EQ(var->version(), 0U);
+    oprs.clear();
+    for (int i = 0; i < 10; ++i) {
+      oprs.push_back(engine->NewOperator(
+          [i](mxnet::RunContext ctx, mxnet::Engine::CallbackOnComplete cb) {
+            Foo(ctx, i);
+            cb();
+          },
+          {}, {var}));
+      engine->Push(oprs.at(i), mxnet::Context{});
+    }
+    engine->WaitForAll();
+    EXPECT_EQ(var->version(), 10U);
+    for (auto&& i : oprs) {
+      engine->DeleteOperator(i);
+    }
+    engine->DeleteVariable([](mxnet::RunContext) {}, mxnet::Context{}, var);
+    engine->WaitForAll();
+
+    var = nullptr;
+    oprs.clear();
+    LOG(INFO) << "All pass";
+  }
 }
 
 #ifdef _OPENMP

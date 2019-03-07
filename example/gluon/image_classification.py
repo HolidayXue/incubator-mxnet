@@ -22,6 +22,7 @@ import logging
 
 import mxnet as mx
 from mxnet import gluon
+from mxnet import profiler
 from mxnet.gluon import nn
 from mxnet.gluon.model_zoo import vision as models
 from mxnet import autograd as ag
@@ -29,7 +30,8 @@ from mxnet.test_utils import get_mnist_iterator
 from mxnet.metric import Accuracy, TopKAccuracy, CompositeEvalMetric
 import numpy as np
 
-from data import *
+from data import (get_cifar10_iterator, get_imagenet_iterator,
+                  get_caltech101_iterator, dummy_iterator)
 
 # logging
 logging.basicConfig(level=logging.INFO)
@@ -46,13 +48,13 @@ fh.setFormatter(formatter)
 # CLI
 parser = argparse.ArgumentParser(description='Train a model for image classification.')
 parser.add_argument('--dataset', type=str, default='cifar10',
-                    help='dataset to use. options are mnist, cifar10, imagenet and dummy.')
+                    help='dataset to use. options are mnist, cifar10, caltech101, imagenet and dummy.')
 parser.add_argument('--data-dir', type=str, default='',
-                    help='training directory of imagenet images, contains train/val subdirs.')
+                  help='training directory of imagenet images, contains train/val subdirs.')
+parser.add_argument('--num-worker', '-j', dest='num_workers', default=4, type=int,
+                    help='number of workers for dataloader')
 parser.add_argument('--batch-size', type=int, default=32,
                     help='training batch size per device (CPU/GPU).')
-parser.add_argument('--num-worker', '-j', dest='num_workers', default=4, type=int,
-                    help='number of workers of dataloader.')
 parser.add_argument('--gpus', type=str, default='',
                     help='ordinates of gpus to use, can be "0,1,2" or empty for cpu only.')
 parser.add_argument('--epochs', type=int, default=120,
@@ -96,19 +98,21 @@ parser.add_argument('--log-interval', type=int, default=50,
 parser.add_argument('--profile', action='store_true',
                     help='Option to turn on memory profiling for front-end, '\
                          'and prints out the memory usage by python function at the end.')
+parser.add_argument('--builtin-profiler', type=int, default=0, help='Enable built-in profiler (0=off, 1=on)')
 opt = parser.parse_args()
 
 # global variables
 logger.info('Starting new image-classification task:, %s',opt)
 mx.random.seed(opt.seed)
 model_name = opt.model
-dataset_classes = {'mnist': 10, 'cifar10': 10, 'imagenet': 1000, 'dummy': 1000}
+dataset_classes = {'mnist': 10, 'cifar10': 10, 'caltech101':101, 'imagenet': 1000, 'dummy': 1000}
 batch_size, dataset, classes = opt.batch_size, opt.dataset, dataset_classes[opt.dataset]
 context = [mx.gpu(int(i)) for i in opt.gpus.split(',')] if opt.gpus.strip() else [mx.cpu()]
 num_gpus = len(context)
 batch_size *= max(1, num_gpus)
 lr_steps = [int(x) for x in opt.lr_steps.split(',') if x.strip()]
 metric = CompositeEvalMetric([Accuracy(), TopKAccuracy(5)])
+kv = mx.kv.create(opt.kvstore)
 
 def get_model(model, ctx, opt):
     """Model initialization."""
@@ -120,7 +124,7 @@ def get_model(model, ctx, opt):
 
     net = models.get_model(model, **kwargs)
     if opt.resume:
-        net.load_params(opt.resume)
+        net.load_parameters(opt.resume)
     elif not opt.use_pretrained:
         if model in ['alexnet']:
             net.initialize(mx.init.Normal())
@@ -131,37 +135,39 @@ def get_model(model, ctx, opt):
 
 net = get_model(opt.model, context, opt)
 
-def get_data_iters(dataset, batch_size, num_workers=1, rank=0):
+def get_data_iters(dataset, batch_size, opt):
     """get dataset iterators"""
     if dataset == 'mnist':
         train_data, val_data = get_mnist_iterator(batch_size, (1, 28, 28),
-                                                  num_parts=num_workers, part_index=rank)
+                                                  num_parts=kv.num_workers, part_index=kv.rank)
     elif dataset == 'cifar10':
         train_data, val_data = get_cifar10_iterator(batch_size, (3, 32, 32),
-                                                    num_parts=num_workers, part_index=rank)
+                                                    num_parts=kv.num_workers, part_index=kv.rank)
     elif dataset == 'imagenet':
+        shape_dim = 299 if model_name == 'inceptionv3' else 224
+
         if not opt.data_dir:
-            raise ValueError('Dir containing raw images in train/val is required for imagenet, plz specify "--data-dir"')
-        if model_name == 'inceptionv3':
-            train_data, val_data = get_imagenet_iterator(opt.data_dir, batch_size, opt.num_workers, 299, opt.dtype)
-        else:
-            train_data, val_data = get_imagenet_iterator(opt.data_dir, batch_size, opt.num_workers, 224, opt.dtype)
+            raise ValueError('Dir containing raw images in train/val is required for imagenet.'
+                             'Please specify "--data-dir"')
+
+        train_data, val_data = get_imagenet_iterator(opt.data_dir, batch_size,
+                                                                opt.num_workers, shape_dim, opt.dtype)
+    elif dataset == 'caltech101':
+        train_data, val_data = get_caltech101_iterator(batch_size, opt.num_workers, opt.dtype)
     elif dataset == 'dummy':
-        if model_name == 'inceptionv3':
-            train_data, val_data = dummy_iterator(batch_size, (3, 299, 299))
-        else:
-            train_data, val_data = dummy_iterator(batch_size, (3, 224, 224))
+        shape_dim = 299 if model_name == 'inceptionv3' else 224
+        train_data, val_data = dummy_iterator(batch_size, (3, shape_dim, shape_dim))
     return train_data, val_data
 
 def test(ctx, val_data):
     metric.reset()
     val_data.reset()
     for batch in val_data:
-        data = gluon.utils.split_and_load(batch.data[0], ctx_list=ctx, batch_axis=0)
-        label = gluon.utils.split_and_load(batch.label[0], ctx_list=ctx, batch_axis=0)
-        outputs = []
-        for x in data:
-            outputs.append(net(x))
+        data = gluon.utils.split_and_load(batch.data[0].astype(opt.dtype, copy=False),
+                                          ctx_list=ctx, batch_axis=0)
+        label = gluon.utils.split_and_load(batch.label[0].astype(opt.dtype, copy=False),
+                                           ctx_list=ctx, batch_axis=0)
+        outputs = [net(X) for X in data]
         metric.update(label, outputs)
     return metric.get()
 
@@ -174,26 +180,30 @@ def update_learning_rate(lr, trainer, epoch, ratio, steps):
 def save_checkpoint(epoch, top1, best_acc):
     if opt.save_frequency and (epoch + 1) % opt.save_frequency == 0:
         fname = os.path.join(opt.prefix, '%s_%d_acc_%.4f.params' % (opt.model, epoch, top1))
-        net.save_params(fname)
+        net.save_parameters(fname)
         logger.info('[Epoch %d] Saving checkpoint to %s with Accuracy: %.4f', epoch, fname, top1)
     if top1 > best_acc[0]:
         best_acc[0] = top1
         fname = os.path.join(opt.prefix, '%s_best.params' % (opt.model))
-        net.save_params(fname)
+        net.save_parameters(fname)
         logger.info('[Epoch %d] Saving checkpoint to %s with Accuracy: %.4f', epoch, fname, top1)
 
 def train(opt, ctx):
     if isinstance(ctx, mx.Context):
         ctx = [ctx]
-    kv = mx.kv.create(opt.kvstore)
-    train_data, val_data = get_data_iters(dataset, batch_size, kv.num_workers, kv.rank)
+
+    train_data, val_data = get_data_iters(dataset, batch_size, opt)
     net.collect_params().reset_ctx(ctx)
     trainer = gluon.Trainer(net.collect_params(), 'sgd',
-                            {'learning_rate': opt.lr, 'wd': opt.wd, 'momentum': opt.momentum,
-                             'multi_precision': True},
-                            kvstore = kv)
+                            optimizer_params={'learning_rate': opt.lr,
+                                              'wd': opt.wd,
+                                              'momentum': opt.momentum,
+                                              'multi_precision': True},
+                            kvstore=kv)
     loss = gluon.loss.SoftmaxCrossEntropyLoss()
 
+    total_time = 0
+    num_epochs = 0
     best_acc = [0]
     for epoch in range(opt.start_epoch, opt.epochs):
         trainer = update_learning_rate(opt.lr, trainer, epoch, opt.lr_factor, lr_steps)
@@ -223,25 +233,41 @@ def train(opt, ctx):
                                epoch, i, batch_size/(time.time()-btic), name[0], acc[0], name[1], acc[1]))
             btic = time.time()
 
+        epoch_time = time.time()-tic
+
+        # First epoch will usually be much slower than the subsequent epics,
+        # so don't factor into the average
+        if num_epochs > 0:
+          total_time = total_time + epoch_time
+        num_epochs = num_epochs + 1
+
         name, acc = metric.get()
         logger.info('[Epoch %d] training: %s=%f, %s=%f'%(epoch, name[0], acc[0], name[1], acc[1]))
-        logger.info('[Epoch %d] time cost: %f'%(epoch, time.time()-tic))
+        logger.info('[Epoch %d] time cost: %f'%(epoch, epoch_time))
         name, val_acc = test(ctx, val_data)
         logger.info('[Epoch %d] validation: %s=%f, %s=%f'%(epoch, name[0], val_acc[0], name[1], val_acc[1]))
 
         # save model if meet requirements
         save_checkpoint(epoch, val_acc[0], best_acc)
+    if num_epochs > 1:
+        print('Average epoch time: {}'.format(float(total_time)/(num_epochs - 1)))
 
 def main():
+    if opt.builtin_profiler > 0:
+        profiler.set_config(profile_all=True, aggregate_stats=True)
+        profiler.set_state('run')
     if opt.mode == 'symbolic':
         data = mx.sym.var('data')
+        if opt.dtype == 'float16':
+            data = mx.sym.Cast(data=data, dtype=np.float16)
         out = net(data)
+        if opt.dtype == 'float16':
+            out = mx.sym.Cast(data=out, dtype=np.float32)
         softmax = mx.sym.SoftmaxOutput(out, name='softmax')
-        mod = mx.mod.Module(softmax, context=[mx.gpu(i) for i in range(num_gpus)] if num_gpus > 0 else [mx.cpu()])
-        kv = mx.kv.create(opt.kvstore)
-        train_data, val_data = get_data_iters(dataset, batch_size, kv.num_workers, kv.rank)
+        mod = mx.mod.Module(softmax, context=context)
+        train_data, val_data = get_data_iters(dataset, batch_size, opt)
         mod.fit(train_data,
-                eval_data = val_data,
+                eval_data=val_data,
                 num_epoch=opt.epochs,
                 kvstore=kv,
                 batch_end_callback = mx.callback.Speedometer(batch_size, max(1, opt.log_interval)),
@@ -249,11 +275,14 @@ def main():
                 optimizer = 'sgd',
                 optimizer_params = {'learning_rate': opt.lr, 'wd': opt.wd, 'momentum': opt.momentum, 'multi_precision': True},
                 initializer = mx.init.Xavier(magnitude=2))
-        mod.save_params('image-classifier-%s-%d-final.params'%(opt.model, opt.epochs))
+        mod.save_parameters('image-classifier-%s-%d-final.params'%(opt.model, opt.epochs))
     else:
         if opt.mode == 'hybrid':
             net.hybridize()
         train(opt, context)
+    if opt.builtin_profiler > 0:
+        profiler.set_state('stop')
+        print(profiler.dumps())
 
 if __name__ == '__main__':
     if opt.profile:

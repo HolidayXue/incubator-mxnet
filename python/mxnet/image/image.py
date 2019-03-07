@@ -21,11 +21,14 @@
 
 from __future__ import absolute_import, print_function
 
+import sys
 import os
 import random
 import logging
 import json
+import warnings
 import numpy as np
+
 
 try:
     import cv2
@@ -35,8 +38,6 @@ except ImportError:
 from ..base import numeric_types
 from .. import ndarray as nd
 from ..ndarray import _internal
-from ..ndarray._internal import _cvimresize as imresize
-from ..ndarray._internal import _cvcopyMakeBorder as copyMakeBorder
 from .. import io
 from .. import recordio
 
@@ -44,8 +45,8 @@ from .. import recordio
 def imread(filename, *args, **kwargs):
     """Read and decode an image to an NDArray.
 
-    Note: `imread` uses OpenCV (not the CV2 Python library).
-    MXNet must have been built with USE_OPENCV=1 for `imdecode` to work.
+    .. note:: `imread` uses OpenCV (not the CV2 Python library).
+       MXNet must have been built with USE_OPENCV=1 for `imdecode` to work.
 
     Parameters
     ----------
@@ -71,26 +72,83 @@ def imread(filename, *args, **kwargs):
 
     Set `flag` parameter to 0 to get grayscale output
 
-    >>> mx.img.imdecode("flower.jpg", flag=0)
+    >>> mx.img.imread("flower.jpg", flag=0)
     <NDArray 224x224x1 @cpu(0)>
 
     Set `to_rgb` parameter to 0 to get output in OpenCV format (BGR)
 
-    >>> mx.img.imdecode(str_image, to_rgb=0)
+    >>> mx.img.imread("flower.jpg", to_rgb=0)
     <NDArray 224x224x3 @cpu(0)>
     """
     return _internal._cvimread(filename, *args, **kwargs)
 
 
-def imdecode(buf, *args, **kwargs):
-    """Decode an image to an NDArray.
+def imresize(src, w, h, *args, **kwargs):
+    r"""Resize image with OpenCV.
 
-    Note: `imdecode` uses OpenCV (not the CV2 Python library).
-    MXNet must have been built with USE_OPENCV=1 for `imdecode` to work.
+    .. note:: `imresize` uses OpenCV (not the CV2 Python library). MXNet must have been built
+       with USE_OPENCV=1 for `imresize` to work.
 
     Parameters
     ----------
-    buf : str/bytes or numpy.ndarray
+    src : NDArray
+        source image
+    w : int, required
+        Width of resized image.
+    h : int, required
+        Height of resized image.
+    interp : int, optional, default=1
+        Interpolation method (default=cv2.INTER_LINEAR).
+        Possible values:
+        0: Nearest Neighbors Interpolation.
+        1: Bilinear interpolation.
+        2: Area-based (resampling using pixel area relation). It may be a
+        preferred method for image decimation, as it gives moire-free
+        results. But when the image is zoomed, it is similar to the Nearest
+        Neighbors method. (used by default).
+        3: Bicubic interpolation over 4x4 pixel neighborhood.
+        4: Lanczos interpolation over 8x8 pixel neighborhood.
+        9: Cubic for enlarge, area for shrink, bilinear for others
+        10: Random select from interpolation method metioned above.
+        Note:
+        When shrinking an image, it will generally look best with AREA-based
+        interpolation, whereas, when enlarging an image, it will generally look best
+        with Bicubic (slow) or Bilinear (faster but still looks OK).
+        More details can be found in the documentation of OpenCV, please refer to
+        http://docs.opencv.org/master/da/d54/group__imgproc__transform.html.
+
+    out : NDArray, optional
+        The output NDArray to hold the result.
+
+    Returns
+    -------
+    out : NDArray or list of NDArrays
+        The output of this function.
+
+    Example
+    -------
+    >>> with open("flower.jpeg", 'rb') as fp:
+    ...     str_image = fp.read()
+    ...
+    >>> image = mx.img.imdecode(str_image)
+    >>> image
+    <NDArray 2321x3482x3 @cpu(0)>
+    >>> new_image = mx.img.resize(image, 240, 360)
+    >>> new_image
+    <NDArray 240x360x3 @cpu(0)>
+    """
+    return _internal._cvimresize(src, w, h, *args, **kwargs)
+
+
+def imdecode(buf, *args, **kwargs):
+    """Decode an image to an NDArray.
+
+    .. note:: `imdecode` uses OpenCV (not the CV2 Python library).
+       MXNet must have been built with USE_OPENCV=1 for `imdecode` to work.
+
+    Parameters
+    ----------
+    buf : str/bytes/bytearray or numpy.ndarray
         Binary image data as string or numpy ndarray.
     flag : int, optional, default=1
         1 for three channel color output. 0 for grayscale output.
@@ -132,7 +190,11 @@ def imdecode(buf, *args, **kwargs):
     <NDArray 224x224x3 @cpu(0)>
     """
     if not isinstance(buf, nd.NDArray):
+        if sys.version_info[0] == 3 and not isinstance(buf, (bytes, bytearray, np.ndarray)):
+            raise ValueError('buf must be of type bytes, bytearray or numpy.ndarray,'
+                             'if you would like to input type str, please convert to bytes')
         buf = nd.array(np.frombuffer(buf, dtype=np.uint8), dtype=np.uint8)
+
     return _internal._cvimdecode(buf, *args, **kwargs)
 
 
@@ -169,6 +231,59 @@ def scale_down(src_size, size):
     if sw < w:
         w, h = sw, float(h * sw) / w
     return int(w), int(h)
+
+
+def copyMakeBorder(src, top, bot, left, right, *args, **kwargs):
+    """Pad image border with OpenCV.
+
+    Parameters
+    ----------
+    src : NDArray
+        source image
+    top : int, required
+        Top margin.
+    bot : int, required
+        Bottom margin.
+    left : int, required
+        Left margin.
+    right : int, required
+        Right margin.
+    type : int, optional, default='0'
+        Filling type (default=cv2.BORDER_CONSTANT).
+        0 - cv2.BORDER_CONSTANT - Adds a constant colored border.
+        1 - cv2.BORDER_REFLECT - Border will be mirror reflection of the
+        border elements, like this : fedcba|abcdefgh|hgfedcb
+        2 - cv2.BORDER_REFLECT_101 or cv.BORDER_DEFAULT - Same as above,
+        but with a slight change, like this : gfedcb|abcdefgh|gfedcba
+        3 - cv2.BORDER_REPLICATE - Last element is replicated throughout,
+        like this: aaaaaa|abcdefgh|hhhhhhh
+        4 - cv2.BORDER_WRAP - it will look like this : cdefgh|abcdefgh|abcdefg
+    value : double, optional, default=0
+        (Deprecated! Use ``values`` instead.) Fill with single value.
+    values : tuple of <double>, optional, default=[]
+        Fill with value(RGB[A] or gray), up to 4 channels.
+
+    out : NDArray, optional
+        The output NDArray to hold the result.
+
+    Returns
+    -------
+    out : NDArray or list of NDArrays
+        The output of this function.
+
+    Example
+    --------
+    >>> with open("flower.jpeg", 'rb') as fp:
+    ...     str_image = fp.read()
+    ...
+    >>> image = mx.img.imdecode(str_image)
+    >>> image
+    <NDArray 2321x3482x3 @cpu(0)>
+    >>> new_image = mx_border = mx.image.copyMakeBorder(mx_img, 1, 2, 3, 4, type=0)
+    >>> new_image
+    <NDArray 2324x3489x3 @cpu(0)>
+    """
+    return _internal._cvcopyMakeBorder(src, top, bot, left, right, *args, **kwargs)
 
 
 def _get_interp_method(interp, sizes=()):
@@ -229,8 +344,8 @@ def _get_interp_method(interp, sizes=()):
 def resize_short(src, size, interp=2):
     """Resizes shorter edge to size.
 
-    Note: `resize_short` uses OpenCV (not the CV2 Python library).
-    MXNet must have been built with OpenCV for `resize_short` to work.
+    .. note:: `resize_short` uses OpenCV (not the CV2 Python library).
+       MXNet must have been built with OpenCV for `resize_short` to work.
 
     Resizes the original image by setting the shorter edge to size
     and setting the longer edge accordingly.
@@ -432,7 +547,7 @@ def color_normalize(src, mean, std=None):
     return src
 
 
-def random_size_crop(src, size, min_area, ratio, interp=2):
+def random_size_crop(src, size, area, ratio, interp=2, **kwargs):
     """Randomly crop src with size. Randomize area and aspect ratio.
 
     Parameters
@@ -441,8 +556,9 @@ def random_size_crop(src, size, min_area, ratio, interp=2):
         Input image
     size : tuple of (int, int)
         Size of the crop formatted as (width, height).
-    min_area : int
-        Minimum area to be maintained after cropping
+    area : float in (0, 1] or tuple of (float, float)
+        If tuple, minimum area and maximum area to be maintained after cropping
+        If float, minimum area to be maintained after cropping, maximum area is set to 1.0
     ratio : tuple of (float, float)
         Aspect ratio range as (min_aspect_ratio, max_aspect_ratio)
     interp: int, optional, default=2
@@ -457,9 +573,18 @@ def random_size_crop(src, size, min_area, ratio, interp=2):
 
     """
     h, w, _ = src.shape
-    area = h * w
+    src_area = h * w
+
+    if 'min_area' in kwargs:
+        warnings.warn('`min_area` is deprecated. Please use `area` instead.',
+                      DeprecationWarning)
+        area = kwargs.pop('min_area')
+    assert not kwargs, "unexpected keyword arguments for `random_size_crop`."
+
+    if isinstance(area, numeric_types):
+        area = (area, 1.0)
     for _ in range(10):
-        target_area = random.uniform(min_area, 1.0) * area
+        target_area = random.uniform(area[0], area[1]) * src_area
         new_ratio = random.uniform(*ratio)
 
         new_w = int(round(np.sqrt(target_area * new_ratio)))
@@ -596,24 +721,31 @@ class RandomSizedCropAug(Augmenter):
     ----------
     size : tuple of (int, int)
         Size of the crop formatted as (width, height).
-    min_area : int
-        Minimum area to be maintained after cropping
+    area : float in (0, 1] or tuple of (float, float)
+        If tuple, minimum area and maximum area to be maintained after cropping
+        If float, minimum area to be maintained after cropping, maximum area is set to 1.0
     ratio : tuple of (float, float)
         Aspect ratio range as (min_aspect_ratio, max_aspect_ratio)
     interp: int, optional, default=2
         Interpolation method. See resize_short for details.
     """
-    def __init__(self, size, min_area, ratio, interp=2):
-        super(RandomSizedCropAug, self).__init__(size=size, min_area=min_area,
+    def __init__(self, size, area, ratio, interp=2, **kwargs):
+        super(RandomSizedCropAug, self).__init__(size=size, area=area,
                                                  ratio=ratio, interp=interp)
         self.size = size
-        self.min_area = min_area
+        if 'min_area' in kwargs:
+            warnings.warn('`min_area` is deprecated. Please use `area` instead.',
+                          DeprecationWarning)
+            self.area = kwargs.pop('min_area')
+        else:
+            self.area = area
         self.ratio = ratio
         self.interp = interp
+        assert not kwargs, "unexpected keyword arguments for `RandomSizedCropAug`."
 
     def __call__(self, src):
         """Augmenter body"""
-        return random_size_crop(src, self.size, self.min_area, self.ratio, self.interp)[0]
+        return random_size_crop(src, self.size, self.area, self.ratio, self.interp)[0]
 
 
 class CenterCropAug(Augmenter):
@@ -821,8 +953,8 @@ class ColorNormalizeAug(Augmenter):
     """
     def __init__(self, mean, std):
         super(ColorNormalizeAug, self).__init__(mean=mean, std=std)
-        self.mean = nd.array(mean) if mean is not None else None
-        self.std = nd.array(std) if std is not None else None
+        self.mean = mean if mean is None or isinstance(mean, nd.NDArray) else nd.array(mean)
+        self.std = std if std is None or isinstance(std, nd.NDArray) else nd.array(std)
 
     def __call__(self, src):
         """Augmenter body"""
@@ -981,14 +1113,14 @@ def CreateAugmenter(data_shape, resize=0, rand_crop=False, rand_resize=False, ra
         auglist.append(RandomGrayAug(rand_gray))
 
     if mean is True:
-        mean = np.array([123.68, 116.28, 103.53])
+        mean = nd.array([123.68, 116.28, 103.53])
     elif mean is not None:
-        assert isinstance(mean, np.ndarray) and mean.shape[0] in [1, 3]
+        assert isinstance(mean, (np.ndarray, nd.NDArray)) and mean.shape[0] in [1, 3]
 
     if std is True:
-        std = np.array([58.395, 57.12, 57.375])
+        std = nd.array([58.395, 57.12, 57.375])
     elif std is not None:
-        assert isinstance(std, np.ndarray) and std.shape[0] in [1, 3]
+        assert isinstance(std, (np.ndarray, nd.NDArray)) and std.shape[0] in [1, 3]
 
     if mean is not None or std is not None:
         auglist.append(ColorNormalizeAug(mean, std))
@@ -1039,6 +1171,14 @@ class ImageIter(io.DataIter):
         Data name for provided symbols.
     label_name : str
         Label name for provided symbols.
+    dtype : str
+        Label data type. Default: float32. Other options: int32, int64, float64
+    last_batch_handle : str, optional
+        How to handle the last batch.
+        This parameter can be 'pad'(default), 'discard' or 'roll_over'.
+        If 'pad', the last batch will be padded with data starting from the begining
+        If 'discard', the last batch will be discarded
+        If 'roll_over', the remaining elements will be rolled over to the next iteration
     kwargs : ...
         More arguments for creating augmenter. See mx.image.CreateAugmenter.
     """
@@ -1046,9 +1186,11 @@ class ImageIter(io.DataIter):
     def __init__(self, batch_size, data_shape, label_width=1,
                  path_imgrec=None, path_imglist=None, path_root=None, path_imgidx=None,
                  shuffle=False, part_index=0, num_parts=1, aug_list=None, imglist=None,
-                 data_name='data', label_name='softmax_label', **kwargs):
+                 data_name='data', label_name='softmax_label', dtype='float32',
+                 last_batch_handle='pad', **kwargs):
         super(ImageIter, self).__init__()
         assert path_imgrec or path_imglist or (isinstance(imglist, list))
+        assert dtype in ['int32', 'float32', 'int64', 'float64'], dtype + ' label not supported'
         num_threads = os.environ.get('MXNET_CPU_WORKER_NTHREADS', 1)
         logging.info('Using %s threads for decoding...', str(num_threads))
         logging.info('Set enviroment variable MXNET_CPU_WORKER_NTHREADS to a'
@@ -1073,7 +1215,7 @@ class ImageIter(io.DataIter):
                 imgkeys = []
                 for line in iter(fin.readline, ''):
                     line = line.strip().split('\t')
-                    label = nd.array([float(i) for i in line[1:-1]])
+                    label = nd.array(line[1:-1], dtype=dtype)
                     key = int(line[0])
                     imglist[key] = (label, line[-1])
                     imgkeys.append(key)
@@ -1087,11 +1229,11 @@ class ImageIter(io.DataIter):
                 key = str(index)  # pylint: disable=redefined-variable-type
                 index += 1
                 if len(img) > 2:
-                    label = nd.array(img[:-1])
+                    label = nd.array(img[:-1], dtype=dtype)
                 elif isinstance(img[0], numeric_types):
-                    label = nd.array([img[0]])
+                    label = nd.array([img[0]], dtype=dtype)
                 else:
-                    label = nd.array(img[0])
+                    label = nd.array(img[0], dtype=dtype)
                 result[key] = (label, img[-1])
                 imgkeys.append(str(key))
             self.imglist = result
@@ -1108,11 +1250,10 @@ class ImageIter(io.DataIter):
         self.batch_size = batch_size
         self.data_shape = data_shape
         self.label_width = label_width
-
         self.shuffle = shuffle
         if self.imgrec is None:
             self.seq = imgkeys
-        elif shuffle or num_parts > 1:
+        elif shuffle or num_parts > 1 or path_imgidx:
             assert self.imgidx is not None
             self.seq = self.imgidx
         else:
@@ -1128,22 +1269,49 @@ class ImageIter(io.DataIter):
         else:
             self.auglist = aug_list
         self.cur = 0
+        self._allow_read = True
+        self.last_batch_handle = last_batch_handle
+        self.num_image = len(self.seq) if self.seq is not None else None
+        self._cache_data = None
+        self._cache_label = None
+        self._cache_idx = None
         self.reset()
 
     def reset(self):
         """Resets the iterator to the beginning of the data."""
-        if self.shuffle:
+        if self.seq is not None and self.shuffle:
+            random.shuffle(self.seq)
+        if self.last_batch_handle != 'roll_over' or \
+            self._cache_data is None:
+            if self.imgrec is not None:
+                self.imgrec.reset()
+            self.cur = 0
+            if self._allow_read is False:
+                self._allow_read = True
+
+    def hard_reset(self):
+        """Resets the iterator and ignore roll over data"""
+        if self.seq is not None and self.shuffle:
             random.shuffle(self.seq)
         if self.imgrec is not None:
             self.imgrec.reset()
         self.cur = 0
+        self._allow_read = True
+        self._cache_data = None
+        self._cache_label = None
+        self._cache_idx = None
 
     def next_sample(self):
         """Helper function for reading in next sample."""
+        if self._allow_read is False:
+            raise StopIteration
         if self.seq is not None:
-            if self.cur >= len(self.seq):
+            if self.cur < self.num_image:
+                idx = self.seq[self.cur]
+            else:
+                if self.last_batch_handle != 'discard':
+                    self.cur = 0
                 raise StopIteration
-            idx = self.seq[self.cur]
             self.cur += 1
             if self.imgrec is not None:
                 s = self.imgrec.read_idx(idx)
@@ -1158,17 +1326,16 @@ class ImageIter(io.DataIter):
         else:
             s = self.imgrec.read()
             if s is None:
+                if self.last_batch_handle != 'discard':
+                    self.imgrec.reset()
                 raise StopIteration
             header, img = recordio.unpack(s)
             return header.label, img
 
-    def next(self):
-        """Returns the next batch of data."""
+    def _batchify(self, batch_data, batch_label, start=0):
+        """Helper function for batchifying data"""
+        i = start
         batch_size = self.batch_size
-        c, h, w = self.data_shape
-        batch_data = nd.empty((batch_size, c, h, w))
-        batch_label = nd.empty(self.provide_label[0][1])
-        i = 0
         try:
             while i < batch_size:
                 label, s = self.next_sample()
@@ -1186,8 +1353,48 @@ class ImageIter(io.DataIter):
         except StopIteration:
             if not i:
                 raise StopIteration
+        return i
 
-        return io.DataBatch([batch_data], [batch_label], batch_size - i)
+    def next(self):
+        """Returns the next batch of data."""
+        batch_size = self.batch_size
+        c, h, w = self.data_shape
+        # if last batch data is rolled over
+        if self._cache_data is not None:
+            # check both the data and label have values
+            assert self._cache_label is not None, "_cache_label didn't have values"
+            assert self._cache_idx is not None, "_cache_idx didn't have values"
+            batch_data = self._cache_data
+            batch_label = self._cache_label
+            i = self._cache_idx
+            # clear the cache data
+        else:
+            batch_data = nd.zeros((batch_size, c, h, w))
+            batch_label = nd.empty(self.provide_label[0][1])
+            i = self._batchify(batch_data, batch_label)
+        # calculate the padding
+        pad = batch_size - i
+        # handle padding for the last batch
+        if pad != 0:
+            if self.last_batch_handle == 'discard':
+                raise StopIteration
+            # if the option is 'roll_over', throw StopIteration and cache the data
+            elif self.last_batch_handle == 'roll_over' and \
+                self._cache_data is None:
+                self._cache_data = batch_data
+                self._cache_label = batch_label
+                self._cache_idx = i
+                raise StopIteration
+            else:
+                _ = self._batchify(batch_data, batch_label, i)
+                if self.last_batch_handle == 'pad':
+                    self._allow_read = False
+                else:
+                    self._cache_data = None
+                    self._cache_label = None
+                    self._cache_idx = None
+
+        return io.DataBatch([batch_data], [batch_label], pad=pad)
 
     def check_data_shape(self, data_shape):
         """Checks if the input data shape is valid"""
@@ -1207,9 +1414,9 @@ class ImageIter(io.DataIter):
         def locate():
             """Locate the image file/index if decode fails."""
             if self.seq is not None:
-                idx = self.seq[self.cur - 1]
+                idx = self.seq[(self.cur % self.num_image) - 1]
             else:
-                idx = self.cur - 1
+                idx = (self.cur % self.num_image) - 1
             if self.imglist is not None:
                 _, fname = self.imglist[idx]
                 msg = "filename: {}".format(fname)
@@ -1224,9 +1431,8 @@ class ImageIter(io.DataIter):
 
     def read_image(self, fname):
         """Reads an input image `fname` and returns the decoded raw bytes.
-
-        Example usage:
-        ----------
+        Examples
+        --------
         >>> dataIter.read_image('Face.jpg') # returns decoded raw bytes.
         """
         with open(os.path.join(self.path_root, fname), 'rb') as fin:

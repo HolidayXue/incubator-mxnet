@@ -1,3 +1,20 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 # NDArray API
 
 ```eval_rst
@@ -124,11 +141,14 @@ The `ndarray` package provides several classes:
     :nosignatures:
 
     NDArray.T
+    NDArray.shape_array
+    NDArray.size_array
     NDArray.reshape
     NDArray.reshape_like
     NDArray.flatten
     NDArray.expand_dims
     NDArray.split
+    NDArray.diag
 ```
 
 ### Array expand elements
@@ -139,6 +159,7 @@ The `ndarray` package provides several classes:
 
     NDArray.broadcast_to
     NDArray.broadcast_axes
+    NDArray.broadcast_like
     NDArray.tile
     NDArray.pad
 ```
@@ -152,6 +173,8 @@ The `ndarray` package provides several classes:
     NDArray.transpose
     NDArray.swapaxes
     NDArray.flip
+    NDArray.depth_to_space
+    NDArray.space_to_depth
 ```
 
 ### Array reduction
@@ -323,6 +346,7 @@ The `ndarray` package provides several classes:
     NDArray.__setitem__
     NDArray.slice
     NDArray.slice_axis
+    NDArray.slice_like
     NDArray.take
     NDArray.one_hot
     NDArray.pick
@@ -361,6 +385,7 @@ The `ndarray` package provides several classes:
     ones_like
     full
     arange
+    diag
     load
     save
 ```
@@ -374,6 +399,8 @@ The `ndarray` package provides several classes:
     :nosignatures:
 
     cast
+    shape_array
+    size_array
     reshape
     reshape_like
     flatten
@@ -388,6 +415,7 @@ The `ndarray` package provides several classes:
 
     broadcast_to
     broadcast_axes
+    broadcast_like
     repeat
     tile
     pad
@@ -402,6 +430,8 @@ The `ndarray` package provides several classes:
     transpose
     swapaxes
     flip
+    depth_to_space
+    space_to_depth
 ```
 
 ### Joining and splitting arrays
@@ -423,11 +453,14 @@ The `ndarray` package provides several classes:
 
     slice
     slice_axis
+    slice_like
     take
     batch_take
     one_hot
     pick
     where
+    ravel_multi_index
+    unravel_index
 ```
 
 ## Mathematical functions
@@ -553,19 +586,35 @@ The `ndarray` package provides several classes:
     lesser_equal
 ```
 
+### Logical operators
+
+```eval_rst
+.. autosummary::
+    :nosignatures:
+
+    logical_and
+    logical_or
+    logical_xor
+    logical_not
+```
+
 ### Random sampling
 
 ```eval_rst
 .. autosummary::
     :nosignatures:
 
-    mxnet.ndarray.random.uniform
-    mxnet.ndarray.random.normal
-    mxnet.ndarray.random.gamma
-    mxnet.ndarray.random.exponential
-    mxnet.ndarray.random.poisson
-    mxnet.ndarray.random.negative_binomial
-    mxnet.ndarray.random.generalized_negative_binomial
+    random.exponential
+    random.gamma
+    random.generalized_negative_binomial
+    random.multinomial
+    random.negative_binomial
+    random.normal
+    random.poisson
+    random.randint
+    random.randn
+    random.shuffle
+    random.uniform
     mxnet.random.seed
 ```
 
@@ -626,6 +675,8 @@ The `ndarray` package provides several classes:
     log_softmax
     relu
     sigmoid
+    erf
+    erfinv
 ```
 
 ### More
@@ -640,6 +691,7 @@ The `ndarray` package provides several classes:
     Embedding
     LeakyReLU
     InstanceNorm
+    LayerNorm
     L2Normalization
     LRN
     ROIPooling
@@ -675,9 +727,14 @@ The `ndarray` package provides several classes:
     :members:
     :imported-members:
     :special-members:
-    :exclude-members: CachedOp, NDArray
+    :exclude-members: CachedOp, NDArray, save, load
+
+.. automodule:: mxnet.ndarray
+    :noindex:
+    :members: save, load
 
 .. automodule:: mxnet.random
+    :noindex:
     :members:
 
 ```

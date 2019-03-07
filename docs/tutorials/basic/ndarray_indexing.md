@@ -1,3 +1,20 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 
 # NDArray Indexing - Array indexing features
 
@@ -15,7 +32,7 @@ In MXNet, we support both basic and advanced indexing following the convention o
 
 ## Basic Slicing and Indexing
 
-Basic slicing extends Python’s basic concept of slicing to N dimensions. For a quick review:
+Basic slicing extends Python's basic concept of slicing to N dimensions. For a quick review:
 
 ```
 a[start:end] # items start through end-1
@@ -263,7 +280,7 @@ Advanced indexing always returns a __copy__ of the data.
 When the index consists of as many integer arrays as the array being indexed has dimensions, the indexing is straight forward, but different from slicing.
 
 Advanced indexes always are [broadcast](https://docs.scipy.org/doc/numpy-1.13.0/reference/ufuncs.html#ufuncs-broadcasting) and iterated as one:
-```python
+```
 result[i_1, ..., i_M] == x[ind_1[i_1, ..., i_M], ind_2[i_1, ..., i_M],
                            ..., ind_N[i_1, ..., i_M]]
 ```

@@ -28,6 +28,7 @@
 
 #include <dmlc/logging.h>
 #include <dmlc/parameter.h>
+#include <mxnet/random_generator.h>
 #include <mxnet/operator.h>
 #include <cstring>
 #include <map>
@@ -36,6 +37,9 @@
 #include <utility>
 #include "./operator_common.h"
 #include "./mshadow_op.h"
+#include "./random/sampler.h"
+#include "./random/sample_op.h"
+#include "./tensor/elemwise_binary_broadcast_op.h"
 
 namespace mxnet {
 namespace op {
@@ -43,7 +47,7 @@ namespace op {
 namespace leakyrelu {
 enum LeakyReLUOpInputs {kData, kGamma};
 enum LeakyReLUOpOutputs {kOut, kMask};
-enum LeakyReLUOpType {kLeakyReLU, kPReLU, kRReLU, kELU};
+enum LeakyReLUOpType {kLeakyReLU, kPReLU, kRReLU, kELU, kSELU};
 enum LeakyReLUOpResource {kRandom};
 }  // namespace leakyrelu
 
@@ -59,6 +63,7 @@ struct LeakyReLUParam : public dmlc::Parameter<LeakyReLUParam> {
     .add_enum("leaky", leakyrelu::kLeakyReLU)
     .add_enum("prelu", leakyrelu::kPReLU)
     .add_enum("elu", leakyrelu::kELU)
+    .add_enum("selu", leakyrelu::kSELU)
     .describe("Activation function to be applied.");
     DMLC_DECLARE_FIELD(slope).set_default(0.25f)
     .describe("Init slope for the activation. (For leaky and elu only)");
@@ -69,13 +74,7 @@ struct LeakyReLUParam : public dmlc::Parameter<LeakyReLUParam> {
   }
 };
 
-struct prelu_grad {
-  MSHADOW_XINLINE static real_t Map(real_t a) {
-    return a > 0.0f ? 0.0f : a;
-  }
-};
-
-template<typename xpu>
+template<typename xpu, typename DType>
 class LeakyReLUOp : public Operator {
  public:
   explicit LeakyReLUOp(LeakyReLUParam param) {
@@ -92,48 +91,103 @@ class LeakyReLUOp : public Operator {
     size_t expected = param_.act_type == leakyrelu::kPReLU ? 2 : 1;
     CHECK_EQ(in_data.size(), expected);
     Stream<xpu> *s = ctx.get_stream<xpu>();
-    Tensor<xpu, 3> data;
-    Tensor<xpu, 3> out;
-    Tensor<xpu, 3> mask;
-    Tensor<xpu, 1> weight;
+    Tensor<xpu, 3, DType> data;
+    Tensor<xpu, 3, DType> out;
+    Tensor<xpu, 3, DType> mask;
     int n = in_data[leakyrelu::kData].shape_[0];
-    int k = in_data[leakyrelu::kData].shape_[1];
+    int k = (in_data[leakyrelu::kData].ndim() > 1) ? in_data[leakyrelu::kData].shape_[1] : 1;
     Shape<3> dshape = Shape3(n, k, in_data[leakyrelu::kData].Size()/n/k);
-    data = in_data[leakyrelu::kData].get_with_shape<xpu, 3, real_t>(dshape, s);
-    out = out_data[leakyrelu::kOut].get_with_shape<xpu, 3, real_t>(dshape, s);
-    if (param_.act_type == leakyrelu::kRReLU) {
-      mask = out_data[leakyrelu::kMask].get_with_shape<xpu, 3, real_t>(dshape, s);
+    data = in_data[leakyrelu::kData].get_with_shape<xpu, 3, DType>(dshape, s);
+    out = out_data[leakyrelu::kOut].get_with_shape<xpu, 3, DType>(dshape, s);
+    if (req[leakyrelu::kOut] == kNullOp) {
+      return;
     }
     switch (param_.act_type) {
       case leakyrelu::kLeakyReLU: {
-        Assign(out, req[leakyrelu::kOut], F<mshadow_op::xelu>(data, param_.slope));
+        MXNET_ASSIGN_REQ_SWITCH(req[leakyrelu::kOut], Req, {
+          mxnet_op::Kernel<mxnet_op::op_with_req<mshadow_op::xelu, Req>, xpu>::Launch(
+            s, out.size(0) * out.size(1) * out.size(2), out.dptr_, data.dptr_, DType(param_.slope));
+        });
         break;
       }
       case leakyrelu::kPReLU: {
-        weight = in_data[leakyrelu::kGamma].get<xpu, 1, real_t>(s);
-        if (weight.shape_.Size() == 1) {
-          Assign(out, req[leakyrelu::kOut],
-                 F<mshadow_op::xelu>(data, mshadow::expr::broadcast_scalar(weight, out.shape_)));
+        mxnet::TShape gshape = expand_shape(in_data[leakyrelu::kGamma].shape_,
+                                     in_data[leakyrelu::kData].shape_);
+        mxnet::TShape new_lshape, new_rshape, new_oshape;
+        const int ndim = op::BinaryBroadcastShapeCompact(in_data[leakyrelu::kData].shape_,
+                                                         gshape,
+                                                         out_data[leakyrelu::kOut].shape_,
+                                                         &new_lshape, &new_rshape, &new_oshape);
+        if (!ndim) {
+          MXNET_ASSIGN_REQ_SWITCH(req[leakyrelu::kOut], Req, {
+            const size_t size = (minthree(out_data[leakyrelu::kOut].Size(),
+                                          in_data[leakyrelu::kData].Size(),
+                                          in_data[leakyrelu::kGamma].Size())
+            + DataType<DType>::kLanes - 1) / DataType<DType>::kLanes;
+            mxnet_op::Kernel<mxnet_op::op_with_req<mshadow_op::xelu, Req>, xpu>::Launch(
+                s, size, out_data[leakyrelu::kOut].dptr<DType>(),
+            in_data[leakyrelu::kData].dptr<DType>(), in_data[leakyrelu::kGamma].dptr<DType>());
+          });
         } else {
-          Assign(out, req[leakyrelu::kOut],
-                 F<mshadow_op::xelu>(data, mshadow::expr::broadcast<1>(weight, out.shape_)));
+          BROADCAST_NDIM_SWITCH(ndim, NDim, {
+            mshadow::Shape<NDim> oshape = new_oshape.get<NDim>();
+            mshadow::Shape<NDim> lstride = mxnet_op::calc_stride(new_lshape.get<NDim>());
+            mshadow::Shape<NDim> rstride = mxnet_op::calc_stride(new_rshape.get<NDim>());
+            mxnet_op::Kernel<mxnet_op::binary_broadcast_kernel<NDim, DType,
+                                                               mshadow_op::xelu>, xpu>::
+            template LaunchEx(s, new_oshape.Size(), req[leakyrelu::kOut], lstride, rstride, oshape,
+            in_data[leakyrelu::kData].dptr<DType>(), in_data[leakyrelu::kGamma].dptr<DType>(),
+            out_data[leakyrelu::kOut].dptr<DType>());
+          });
         }
         break;
       }
       case leakyrelu::kRReLU: {
         if (ctx.is_train) {
-          Random<xpu>* prnd = ctx.requested[leakyrelu::kRandom].get_random<xpu, real_t>(s);
-          mask = prnd->uniform(mask.shape_);
-          mask = mask * (param_.upper_bound - param_.lower_bound) + param_.lower_bound;
-          Assign(out, req[leakyrelu::kOut], F<mshadow_op::xelu>(data, mask));
+          mask = out_data[leakyrelu::kMask].get_with_shape<xpu, 3, DType>(dshape, s);
+          mxnet::op::UniformSampler<xpu> sampler;
+          Tensor<xpu, 1, DType> low, high;
+          mxnet::op::GetSamplingTempData<xpu, DType>(DType(0.0f), DType(1.0f), ctx, &low, &high);
+          mxnet::common::random::RandGenerator<xpu, DType> *pgen =
+            ctx.requested[0].get_parallel_random<xpu, DType>();
+          Tensor<xpu, 1, DType> out = mask.FlatTo1D();
+          sampler.Sample(low, high, out, pgen, s);
+          MXNET_ASSIGN_REQ_SWITCH(req[leakyrelu::kMask], Req, {
+            mxnet_op::Kernel<mxnet_op::op_with_req<mshadow_op::mul, Req>, xpu>::Launch(
+              s, mask.size(0) * mask.size(1) * mask.size(2), mask.dptr_, mask.dptr_,
+              DType(param_.upper_bound - param_.lower_bound));
+          });
+          MXNET_ASSIGN_REQ_SWITCH(req[leakyrelu::kMask], Req, {
+            mxnet_op::Kernel<mxnet_op::op_with_req<mshadow_op::plus, Req>, xpu>::Launch(
+              s, mask.size(0) * mask.size(1) * mask.size(2), mask.dptr_, mask.dptr_,
+              DType(param_.lower_bound));
+          });
+          MXNET_ASSIGN_REQ_SWITCH(req[leakyrelu::kOut], Req, {
+            mxnet_op::Kernel<mxnet_op::op_with_req<mshadow_op::xelu, Req>, xpu>::Launch(
+              s, mask.size(0) * mask.size(1) * mask.size(2), out.dptr_, data.dptr_, mask.dptr_);
+          });
         } else {
           const float slope = (param_.lower_bound + param_.upper_bound) / 2.0f;
-          Assign(out, req[leakyrelu::kOut], F<mshadow_op::xelu>(data, slope));
+          MXNET_ASSIGN_REQ_SWITCH(req[leakyrelu::kOut], Req, {
+            mxnet_op::Kernel<mxnet_op::op_with_req<mshadow_op::xelu, Req>, xpu>::Launch(
+              s, out.size(0) * out.size(1) * out.size(2), out.dptr_, data.dptr_, DType(slope));
+          });
         }
         break;
       }
       case leakyrelu::kELU: {
-        Assign(out, req[leakyrelu::kOut], F<mshadow_op::elu>(data, param_.slope));
+        MXNET_ASSIGN_REQ_SWITCH(req[leakyrelu::kOut], Req, {
+          mxnet_op::Kernel<mxnet_op::op_with_req<mshadow_op::elu, Req>, xpu>::Launch(
+            s, out.size(0) * out.size(1) * out.size(2), out.dptr_, data.dptr_,
+            DType(param_.slope));
+        });
+        break;
+      }
+      case leakyrelu::kSELU: {
+        MXNET_ASSIGN_REQ_SWITCH(req[leakyrelu::kOut], Req, {
+          mxnet_op::Kernel<mxnet_op::op_with_req<mshadow_op::selu, Req>, xpu>::Launch(
+            s, out.size(0) * out.size(1) * out.size(2), out.dptr_, data.dptr_);
+        });
         break;
       }
       default:
@@ -155,47 +209,59 @@ class LeakyReLUOp : public Operator {
     CHECK_EQ(req.size(), expected);
     CHECK_EQ(in_data.size(), expected);
     Stream<xpu> *s = ctx.get_stream<xpu>();
-    Tensor<xpu, 3> output;
-    Tensor<xpu, 3> data;
-    Tensor<xpu, 3> gdata;
-    Tensor<xpu, 3> grad;
-    Tensor<xpu, 3> mask;
-    Tensor<xpu, 1> weight;
-    Tensor<xpu, 1> grad_weight;
+    Tensor<xpu, 3, DType> output;
+    Tensor<xpu, 3, DType> data;
+    Tensor<xpu, 3, DType> gdata;
+    Tensor<xpu, 3, DType> grad;
+    Tensor<xpu, 3, DType> mask;
     int n = out_grad[leakyrelu::kOut].shape_[0];
-    int k = out_grad[leakyrelu::kOut].shape_[1];
+    int k = (out_grad[leakyrelu::kOut].ndim() > 1) ? out_grad[leakyrelu::kOut].shape_[1] : 1;
     Shape<3> dshape = Shape3(n, k, out_grad[leakyrelu::kOut].Size()/n/k);
-    grad = out_grad[leakyrelu::kOut].get_with_shape<xpu, 3, real_t>(dshape, s);
-    gdata = in_grad[leakyrelu::kData].get_with_shape<xpu, 3, real_t>(dshape, s);
-    output = out_data[leakyrelu::kOut].get_with_shape<xpu, 3, real_t>(dshape, s);
+    grad = out_grad[leakyrelu::kOut].get_with_shape<xpu, 3, DType>(dshape, s);
+    gdata = in_grad[leakyrelu::kData].get_with_shape<xpu, 3, DType>(dshape, s);
+    output = out_data[leakyrelu::kOut].get_with_shape<xpu, 3, DType>(dshape, s);
     if (param_.act_type == leakyrelu::kRReLU) {
-      mask = out_data[leakyrelu::kMask].get_with_shape<xpu, 3, real_t>(dshape, s);
+      mask = out_data[leakyrelu::kMask].get_with_shape<xpu, 3, DType>(dshape, s);
     }
     if (param_.act_type == leakyrelu::kPReLU) {
-      data = in_data[leakyrelu::kData].get_with_shape<xpu, 3, real_t>(dshape, s);
+      data = in_data[leakyrelu::kData].get_with_shape<xpu, 3, DType>(dshape, s);
     }
     switch (param_.act_type) {
       case leakyrelu::kLeakyReLU: {
-        Assign(gdata, req[leakyrelu::kData], F<mshadow_op::xelu_grad>(output, param_.slope) * grad);
+        MXNET_ASSIGN_REQ_SWITCH(req[leakyrelu::kData], Req, {
+          mxnet_op::Kernel<mxnet_op::op_with_req<
+            mxnet_op::backward_grad_tuned<mshadow_op::xelu_grad>, Req>, xpu>::Launch(
+              s, gdata.size(0) * gdata.size(1) * gdata.size(2), gdata.dptr_, grad.dptr_,
+              output.dptr_, DType(param_.slope));
+        });
         break;
       }
       case leakyrelu::kPReLU: {
-        weight = in_data[leakyrelu::kGamma].get<xpu, 1, real_t>(s);
-        grad_weight = in_grad[leakyrelu::kGamma].get<xpu, 1, real_t>(s);
-        if (weight.shape_.Size() == 1) {
-          Shape<4> gshape = Shape4(1, grad.shape_[0], grad.shape_[1], grad.shape_[2]);
-          Assign(grad_weight, req[leakyrelu::kGamma],
-                 sumall_except_dim<0>(reshape(F<prelu_grad>(data) * grad, gshape)));
-          Assign(gdata, req[leakyrelu::kData],
-                 F<mshadow_op::xelu_grad>(data,
-                                          mshadow::expr::broadcast_scalar(weight, data.shape_))
-                 * grad);
+        mxnet::TShape gshape = expand_shape(in_grad[leakyrelu::kGamma].shape_,
+                                     in_grad[leakyrelu::kData].shape_);
+        mxnet::TShape new_lshape, new_rshape, new_oshape;
+        const bool need_bc = BinaryBroadcastShapeCompact(in_grad[leakyrelu::kData].shape_,
+                                                         gshape,
+                                                         out_grad[leakyrelu::kOut].shape_,
+                                                         &new_lshape,
+                                                         &new_rshape,
+                                                         &new_oshape) != 0;
+        if (!need_bc) {
+          ElemwiseBinaryOp::BackwardUseIn<xpu,
+                                          mshadow_op::xelu_grad,
+                                          mshadow_op::prelu_grad>(
+            nnvm::NodeAttrs(), ctx, {out_grad[leakyrelu::kOut],
+                                     in_data[leakyrelu::kData],
+                                     in_data[leakyrelu::kGamma]}, req, in_grad);
         } else {
-          Assign(grad_weight, req[leakyrelu::kGamma],
-                 sumall_except_dim<1>(F<prelu_grad>(data) * grad));
-          Assign(gdata, req[leakyrelu::kData],
-                 F<mshadow_op::xelu_grad>(data, mshadow::expr::broadcast<1>(weight, data.shape_))
-                 * grad);
+          BROADCAST_NDIM_SWITCH(new_oshape.ndim(), NDim, {
+            BinaryBroadcastBackwardUseInImpl<xpu, NDim, DType,
+              mshadow_op::xelu_grad, mshadow_op::prelu_grad>(
+                ctx, {out_grad[leakyrelu::kOut],
+                      in_data[leakyrelu::kData],
+                      in_data[leakyrelu::kGamma]}, req, in_grad,
+                new_lshape, new_rshape, new_oshape);
+          });
         }
         break;
       }
@@ -204,7 +270,21 @@ class LeakyReLUOp : public Operator {
         break;
       }
       case leakyrelu::kELU: {
-        Assign(gdata, req[leakyrelu::kData], F<mshadow_op::elu_grad>(output, param_.slope) * grad);
+        MXNET_ASSIGN_REQ_SWITCH(req[leakyrelu::kData], Req, {
+          mxnet_op::Kernel<mxnet_op::op_with_req<
+            mxnet_op::backward_grad_tuned<mshadow_op::elu_grad>, Req>, xpu>::Launch(
+              s, gdata.size(0) * gdata.size(1) * gdata.size(2), gdata.dptr_, grad.dptr_,
+              output.dptr_, DType(param_.slope));
+        });
+        break;
+      }
+      case leakyrelu::kSELU: {
+        MXNET_ASSIGN_REQ_SWITCH(req[leakyrelu::kData], Req, {
+          mxnet_op::Kernel<mxnet_op::op_with_req<
+            mxnet_op::backward_grad_tuned<mshadow_op::selu_grad>, Req>, xpu>::Launch(
+              s, gdata.size(0) * gdata.size(1) * gdata.size(2), gdata.dptr_, grad.dptr_,
+              output.dptr_);
+        });
         break;
       }
       default:
@@ -213,11 +293,29 @@ class LeakyReLUOp : public Operator {
   }
 
  private:
+  /*! \brief Minimum of three */
+  static MSHADOW_XINLINE size_t minthree(const size_t a, const size_t b, const size_t c) {
+    return a < b ? (a < c ? a : c) : (b < c ? b : c);
+  }
+  static inline mxnet::TShape expand_shape(const mxnet::TShape& src, const mxnet::TShape& dst) {
+    mxnet::TShape result(dst.ndim());
+    int s = src.ndim() - 1;
+    for (int i = dst.ndim() - 1; i >= 0; i--) {
+      if (s >= 0 && i <= 1 && (dst[i] == src[s] || src[s] == 1)) {
+        result[i] = src[s];
+        s--;
+      } else {
+        result[i] = 1;
+      }
+    }
+    CHECK(s == -1) << "Cannot broadcast gamma to data. gamma: " << src << ", data: " << dst;
+    return result;
+  }
   LeakyReLUParam param_;
 };  // class LeakyReLUOp
 
 template<typename xpu>
-Operator* CreateOp(LeakyReLUParam type);
+Operator* CreateOp(LeakyReLUParam type, int dtype);
 
 #if DMLC_USE_CXX11
 class LeakyReLUProp : public OperatorProperty {
@@ -230,23 +328,25 @@ class LeakyReLUProp : public OperatorProperty {
     return param_.__DICT__();
   }
 
-  bool InferShape(std::vector<TShape> *in_shape,
-                  std::vector<TShape> *out_shape,
-                  std::vector<TShape> *aux_shape) const override {
+  bool InferShape(mxnet::ShapeVector *in_shape,
+                  mxnet::ShapeVector *out_shape,
+                  mxnet::ShapeVector *aux_shape) const override {
     using namespace mshadow;
     if (param_.act_type == leakyrelu::kPReLU) {
       CHECK_EQ(in_shape->size(), 2U) << "Input:[data, gamma]";
     } else {
       CHECK_EQ(in_shape->size(), 1U) << "Input:[data]";
     }
-    const TShape &dshape = in_shape->at(leakyrelu::kData);
+    const mxnet::TShape &dshape = in_shape->at(leakyrelu::kData);
     if (dshape.ndim() == 0) return false;
     if (param_.act_type == leakyrelu::kPReLU) {
-      const TShape &gshape = in_shape->at(leakyrelu::kGamma);
-      if (gshape.ndim() == 1 && gshape.Size() == 1)
-        in_shape->at(leakyrelu::kGamma) = TShape(Shape1(1));
-      else
-        in_shape->at(leakyrelu::kGamma) = TShape(Shape1(dshape[1]));
+      const mxnet::TShape &gshape = in_shape->at(leakyrelu::kGamma);
+      if (gshape.ndim() == 0) {
+        in_shape->at(leakyrelu::kGamma) = mxnet::TShape(Shape1(dshape[1]));
+      }
+      if (dshape == gshape) {
+        SHAPE_ASSIGN_CHECK(*out_shape, 0, dshape);
+      }
     }
     out_shape->clear();
     out_shape->push_back(dshape);
@@ -254,6 +354,26 @@ class LeakyReLUProp : public OperatorProperty {
       out_shape->push_back(dshape);
     }
     return true;
+  }
+
+  bool InferType(std::vector<int> *in_type,
+                 std::vector<int> *out_type,
+                 std::vector<int> *aux_type) const override {
+    int dtype = -1;
+    for (const int& type : *in_type) {
+      type_assign(&dtype, type);
+    }
+    for (const int& type : *out_type) {
+      type_assign(&dtype, type);
+    }
+
+    for (size_t i = 0; i < in_type->size(); ++i) {
+      TYPE_ASSIGN_CHECK(*in_type, i, dtype);
+    }
+    for (size_t i = 0; i < out_type->size(); ++i) {
+      TYPE_ASSIGN_CHECK(*out_type, i, dtype);
+    }
+    return dtype != -1;
   }
 
   OperatorProperty* Copy() const override {
@@ -330,7 +450,7 @@ class LeakyReLUProp : public OperatorProperty {
   }
 
   std::vector<ResourceRequest> ForwardResource(
-      const std::vector<TShape> &in_shape) const override {
+      const mxnet::ShapeVector &in_shape) const override {
     if (param_.act_type == leakyrelu::kRReLU) {
       return {ResourceRequest::kRandom};
     } else {
@@ -338,7 +458,18 @@ class LeakyReLUProp : public OperatorProperty {
     }
   }
 
-  Operator* CreateOperator(Context ctx) const override;
+  std::vector<ResourceRequest> BackwardResource(
+      const mxnet::ShapeVector &in_shape) const override {
+    return {ResourceRequest::kTempSpace};
+  }
+
+  Operator* CreateOperator(Context ctx) const override {
+    LOG(FATAL) << "Not Implemented.";
+    return NULL;
+  }
+
+  Operator* CreateOperatorEx(Context ctx, mxnet::ShapeVector *in_shape,
+                           std::vector<int> *in_type) const override;
 
  private:
   LeakyReLUParam param_;

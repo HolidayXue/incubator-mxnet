@@ -20,7 +20,8 @@ import os
 import re
 import mxnet as mx
 import numpy as np
-from common import models
+from common import assertRaises, models
+from mxnet.base import NotImplementedForSymbol
 from mxnet.test_utils import discard_stderr
 import pickle as pkl
 
@@ -30,6 +31,10 @@ def test_symbol_basic():
     for m in mlist:
         m.list_arguments()
         m.list_outputs()
+
+def test_symbol_bool():
+    x = mx.symbol.Variable('x')
+    assertRaises(NotImplementedForSymbol, bool, x)
 
 def test_symbol_compose():
     data = mx.symbol.Variable('data')
@@ -115,6 +120,13 @@ def test_symbol_infer_type():
     assert out == [np.float32]
     assert aux == []
 
+    # partial infer type
+    arg, out, aux = mlp.infer_type_partial()
+    assert arg == [None, np.float32, np.float32, np.float32]
+    assert out == [np.float32]
+    assert aux == []
+
+
 def test_symbol_infer_shape():
     num_hidden = 128
     num_dim    = 64
@@ -145,6 +157,19 @@ def test_symbol_infer_shape():
     assert arg_shapes['x2h_weight'] == (num_hidden, num_dim)
     assert arg_shapes['h2h_weight'] == (num_hidden, num_hidden)
 
+    # Partial shape inference with some unknown dimensions
+    data_shape = (1, 0, 0, 0)
+    data = mx.sym.Variable('data', shape=data_shape)
+    weight = mx.sym.Variable('weight')
+    cdata = mx.sym.cast(data, dtype='float16')
+    cweight = mx.sym.cast(weight, dtype='float16')
+    test = mx.sym.Convolution(data=cdata, weight=cweight, pad=(3, 3), num_filter=64, stride=(2, 2), no_bias=True, kernel=(7, 7))
+
+    arg, _, _ = test.infer_shape_partial()
+    arg_shapes = dict(zip(test.list_arguments(), arg))
+    assert arg_shapes['data'] == data_shape
+    assert arg_shapes['weight'] == (64, 0, 7, 7)
+
 
 def test_symbol_infer_shape_var():
     "Test specifying shape information when constructing a variable"
@@ -166,13 +191,13 @@ def test_symbol_infer_shape_var():
 def test_symbol_fluent():
     has_grad = set(['flatten', 'expand_dims', 'flip', 'tile', 'transpose', 'sum', 'nansum', 'prod',
                     'nanprod', 'mean', 'max', 'min', 'reshape', 'broadcast_to', 'split',
-                    'broadcast_axes', 'pad', 'swapaxes', 'slice', 'slice_axis', 'take',
-                    'one_hot', 'pick', 'sort', 'topk', 'argsort', 'argmax', 'argmin',
+                    'broadcast_axes', 'broadcast_like', 'pad', 'swapaxes', 'slice', 'slice_axis', 'slice_like',
+                    'take', 'one_hot', 'pick', 'sort', 'topk', 'argsort', 'argmax', 'argmin',
                     'clip', 'abs', 'sign', 'sin', 'cos', 'tan', 'arcsin', 'arccos', 'arctan',
                     'degrees', 'radians', 'sinh', 'cosh', 'tanh', 'arcsinh', 'arccosh', 'arctanh',
                     'exp', 'expm1', 'log', 'log10', 'log2', 'log1p', 'sqrt', 'rsqrt',
                     'square', 'reciprocal' 'reshape_like', 'cbrt', 'rcbrt', 'relu', 'sigmoid',
-                    'softmax', 'log_softmax', 'rint', 'ceil', 'floor', 'trunc', 'fix'])
+                    'softmax', 'log_softmax', 'softmin', 'rint', 'ceil', 'floor', 'trunc', 'fix'])
 
     def check_fluent_regular(func, kwargs, shape=(5, 17, 1), equal_nan=False):
         with mx.name.NameManager():
@@ -185,13 +210,13 @@ def test_symbol_fluent():
                                      equal_nan=equal_nan)
 
     for func in ['flatten', 'norm', 'round', 'rint', 'fix', 'floor', 'ceil', 'trunc', 'zeros_like',
-                 'ones_like', 'abs', 'sign', 'sin', 'cos', 'degrees', 'radians',
-                 'exp', 'expm1',  'square', 'reciprocal', 'argmax_channel']:
+                 'ones_like', 'abs', 'sign', 'sin', 'cos', 'degrees', 'radians', 'exp', 'expm1',
+                 'square', 'reciprocal', 'argmax_channel', 'shape_array', 'size_array']:
         check_fluent_regular(func, {})
 
     for func in ['arccosh', 'arcsin', 'arccos', 'arctan', 'tan', 'sinh', 'cosh', 'tanh',
                  'arcsinh', 'arctanh', 'log', 'log10', 'log2', 'log1p', 'sqrt', 'rsqrt',
-                 'cbrt', 'rcbrt', 'relu', 'sigmoid', 'softmax', 'log_softmax']:
+                 'cbrt', 'rcbrt', 'relu', 'sigmoid', 'softmax', 'log_softmax', 'softmin']:
         check_fluent_regular(func, {}, equal_nan=True)
 
     for func in ['expand_dims', 'flip', 'sort', 'topk', 'argsort', 'argmax', 'argmin']:
@@ -204,12 +229,14 @@ def test_symbol_fluent():
     check_fluent_regular('split', {'axis': 2, 'num_outputs': 3}, shape=(5, 17, 6))
     check_fluent_regular('slice', {'begin': (2, 5, 1), 'end': (4, 7, 6)}, shape=(5, 17, 6))
     check_fluent_regular('slice_axis', {'axis': 1, 'begin': 5, 'end': 7})
+    check_fluent_regular('slice_like', {'axes': (0, -2), 'shape_like': mx.sym.zeros((3, 3))})
     check_fluent_regular('clip', {'a_min': 0.25, 'a_max': 0.75})
     check_fluent_regular('broadcast_axes', {'axis': (2,), 'size': (5,)})
+    check_fluent_regular('broadcast_like', {'rhs': mx.sym.ones((1, 5)), 'lhs_axes': (0,), 'rhs_axes': (1,)}, shape=(1,9))
     check_fluent_regular('pad', {'mode': 'constant', 'pad_width': (0,0,0,0,3,0,0,4)}, shape=(5, 17, 2, 3))
     check_fluent_regular('reshape_like', {'rhs': mx.sym.ones((30, 17))}, shape=(5, 17, 2, 3))
 
-    for func in ['sum', 'nansum', 'prod', 'nanprod', 'mean', 'max', 'min']:
+    for func in ['sum', 'nansum', 'prod', 'nanprod', 'mean', 'max', 'min', 'norm']:
         check_fluent_regular(func, {'axis': (1, 2)})
 
     check_fluent_regular('reshape', {'shape': (17, 1, 5)})

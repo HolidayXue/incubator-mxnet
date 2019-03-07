@@ -15,10 +15,13 @@
  * KIND, either express or implied.  See the License for the
  * specific language governing permissions and limitations
  * under the License.
+ * 
+ * The file is used for testing if the optimizer could be created more than 1.
+ * By running: build/test_optimizer
+ * It return 0(means no error) if it succeed otherwise 1(error).
  */
 #include "mxnet-cpp/MxNetCpp.h"
 
-using namespace std;
 using namespace mxnet::cpp;
 
 int main(int argc, char** argv) {
@@ -27,6 +30,7 @@ int main(int argc, char** argv) {
   opt = OptimizerRegistry::Find("adam");
   int ret = (opt == 0) ? 1 : 0;
 
+  delete opt;
   MXNotifyShutdown();
   return ret;
 }

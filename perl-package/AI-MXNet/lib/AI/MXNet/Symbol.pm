@@ -229,6 +229,16 @@ method hypot(AI::MXNet::Symbol|Num $other)
     );
 }
 
+method reshape(@args)
+{
+    if(@args%2)
+    {
+        unshift @args, 'shape';
+    }
+    return $self->SUPER::reshape(@args);
+}
+
+
 method deepcopy()
 {
     my $handle = check_call(AI::MXNetCAPI::SymbolCopy($self->handle));
@@ -518,7 +528,7 @@ method list_inputs()
 =cut
 
 
-method infer_type(Str|Undef @args)
+method infer_type(Maybe[Str] @args)
 {
     my ($positional_arguments, $kwargs, $kwargs_order) = _parse_arguments("Dtype", @args);
     my $sdata = [];
@@ -1360,6 +1370,7 @@ method load(Str $fname)
 }
 
 =head2 load_json
+
     Load symbol from json string.
 
     Parameters
@@ -1400,16 +1411,19 @@ method ones(Shape :$shape, Dtype :$dtype='float32', Maybe[Str] :$name=, Maybe[St
 
     Parameters
     ----------
-    start : number
+    :$start=0 : number
         Start of interval. The interval includes this value. The default start value is 0.
-    stop : number, optional
+    :$stop= : number, optional
         End of interval. The interval does not include this value.
-    step : number, optional
+    :$step=1.0 : number, optional
         Spacing between values
-    repeat : int, optional
+    :$repeat=1 : int, optional
         "The repeating time of all elements.
         E.g repeat=3, the element a will be repeated three times --> a, a, a.
-    dtype : type, optional
+    :$infer_range=0 : Bool
+        When set to 1, infer stop position from start, step, repeat, and
+        output tensor size.
+    :$dtype='float32' : type, optional
         The value type of the NDArray, default to np.float32
 
     Returns
@@ -1418,11 +1432,12 @@ method ones(Shape :$shape, Dtype :$dtype='float32', Maybe[Str] :$name=, Maybe[St
         The created Symbol
 =cut
 
-method arange(Index :$start=0, Index :$stop=, Num :$step=1.0, Index :$repeat=1, Maybe[Str] :$name=, Dtype :$dtype='float32')
+method arange(Index :$start=0, Index :$stop=, Num :$step=1.0, Index :$repeat=1, Bool :$infer_range=0, Maybe[Str] :$name=, Dtype :$dtype='float32')
 {
     return __PACKAGE__->_arange({
                  start => $start, (defined $stop ? (stop => $stop) : ()),
-                 step => $step, repeat => $repeat, name => $name, dtype => $dtype
+                 step => $step, repeat => $repeat, name => $name, dtype => $dtype,
+                 infer_range => $infer_range
     });
 }
 
@@ -1459,12 +1474,12 @@ sub _parse_arguments
             }
             else
             {
-                confess("Argument need to be of type $type");
+                confess("Argument needs to be of type $type");
             }
         }
         else
         {
-            confess("Argument need to be one type $type");
+            confess("Argument needs to be one type $type");
         }
     }
     return (\@positional_arguments, \%kwargs, \@kwargs_order);
@@ -1495,8 +1510,12 @@ sub  _ufunc_helper
     }
 }
 
+method histogram(@args) { __PACKAGE__->_histogram(@args%2 ? ('data', @args) : @args) }
+
 sub contrib { 'AI::MXNet::Contrib::Symbol' }
 sub random  { 'AI::MXNet::Symbol::Random' }
 sub sparse  { 'AI::MXNet::Symbol::Sparse' }
+sub linalg  { 'AI::MXNet::LinAlg::Symbol' }
+sub image   { 'AI::MXNet::Image::Symbol' }
 
 1;

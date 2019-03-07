@@ -21,7 +21,7 @@
 """MXNet: a concise, fast and flexible framework for deep learning."""
 from __future__ import absolute_import
 
-from .context import Context, current_context, cpu, gpu
+from .context import Context, current_context, cpu, gpu, cpu_pinned
 from . import engine
 from .base import MXNetError
 from . import base
@@ -41,6 +41,7 @@ from . import random as rnd
 from . import random
 from . import optimizer
 from . import model
+from . import metric
 from . import notebook
 from . import initializer
 # use mx.init as short for mx.initializer
@@ -53,7 +54,6 @@ from . import callback
 from . import lr_scheduler
 # use mx.kv as short for kvstore
 from . import kvstore as kv
-from . import kvstore_server
 # Runtime compile module
 from . import rtc
 # Attribute scope to add attributes to symbolic graphs
@@ -81,3 +81,11 @@ from . import rnn
 from . import gluon
 
 __version__ = base.__version__
+
+# Dist kvstore module which launches a separate process when role is set to "server".
+# This should be done after other modules are initialized.
+# Otherwise this may result in errors when unpickling custom LR scheduler/optimizers.
+# For example, the LRScheduler in gluoncv depends on a specific version of MXNet, and
+# checks the __version__ attr of MXNet, which is not set on kvstore server due to the
+# fact that kvstore-server module is imported before the __version__ attr is set.
+from . import kvstore_server

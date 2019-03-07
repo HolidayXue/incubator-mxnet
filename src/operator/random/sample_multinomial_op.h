@@ -36,12 +36,12 @@ namespace mxnet {
 namespace op {
 
 struct SampleMultinomialParam : public dmlc::Parameter<SampleMultinomialParam> {
-  TShape shape;
+  mxnet::TShape shape;
   bool get_prob;
   int dtype;
   DMLC_DECLARE_PARAMETER(SampleMultinomialParam) {
     DMLC_DECLARE_FIELD(shape)
-      .set_default(TShape())
+      .set_default(mxnet::TShape())
       .describe("Shape to be sampled from each random distribution.");
     DMLC_DECLARE_FIELD(get_prob)
     .set_default(false)
@@ -49,36 +49,44 @@ struct SampleMultinomialParam : public dmlc::Parameter<SampleMultinomialParam> {
           "result. This is usually used for differentiating through "
           "stochastic variables, e.g. in reinforcement learning.");
     DMLC_DECLARE_FIELD(dtype)
+    .add_enum("uint8", mshadow::kUint8)
     .add_enum("int32", mshadow::kInt32)
+    .add_enum("float16", mshadow::kFloat16)
+    .add_enum("float32", mshadow::kFloat32)
+    .add_enum("float64", mshadow::kFloat64)
     .set_default(mshadow::kInt32)
-    .describe("DType of the output in case this can't be inferred. "
-              "Only support int32 for now.");
+    .describe("DType of the output in case this can't be inferred.");
   }
 };
 
 
 inline bool SampleMultinomialOpShape(const nnvm::NodeAttrs& attrs,
-                                     std::vector<TShape>* in_attrs,
-                                     std::vector<TShape>* out_attrs) {
+                                     mxnet::ShapeVector* in_attrs,
+                                     mxnet::ShapeVector* out_attrs) {
   const SampleMultinomialParam& param = nnvm::get<SampleMultinomialParam>(attrs.parsed);
 
   CHECK_EQ(in_attrs->size(), 1U);
   CHECK_EQ(out_attrs->size(), param.get_prob ? 2U : 1U);
-  const TShape& ishape = (*in_attrs)[0];
+  const mxnet::TShape& ishape = (*in_attrs)[0];
   if (!ishape.ndim()) return false;
+
+  MSHADOW_TYPE_SWITCH(param.dtype, DType, {
+    CHECK_LE(ishape[ishape.ndim() - 1], mxnet::common::MaxIntegerValue<DType>())
+    << "'dtype' does not have a sufficient precision to represent the indices of the input array.";
+  });
 
   if (ishape.ndim() == 1) {
     if (param.shape.ndim()) {
       SHAPE_ASSIGN_CHECK(*out_attrs, 0, param.shape);
-      if (param.get_prob) SHAPE_ASSIGN_CHECK(*out_attrs, 0, param.shape);
+      if (param.get_prob) SHAPE_ASSIGN_CHECK(*out_attrs, 1, param.shape);
     } else {
-      SHAPE_ASSIGN_CHECK(*out_attrs, 0, TShape(1));
-      if (param.get_prob) SHAPE_ASSIGN_CHECK(*out_attrs, 0, TShape(1));
+      SHAPE_ASSIGN_CHECK(*out_attrs, 0, mxnet::TShape(1));
+      if (param.get_prob) SHAPE_ASSIGN_CHECK(*out_attrs, 1, mxnet::TShape(1));
     }
     return true;
   }
 
-  TShape oshape(ishape.ndim() - 1 + param.shape.ndim());
+  mxnet::TShape oshape(ishape.ndim() - 1 + param.shape.ndim());
   for (size_t i = 0; i < ishape.ndim() - 1; ++i) {
     oshape[i] = ishape[i];
   }
@@ -155,9 +163,11 @@ void SampleMultinomialForward(const nnvm::NodeAttrs& attrs,
     Tensor<xpu, 1, float> uniform =
       ctx.requested[1].get_space_typed<xpu, 1, float>(Shape1(N*M), s);
     prnd->SampleUniform(&uniform, 0, 1);
-    Kernel<SampleMultinomialKernel, xpu>::Launch(
-      s, N, K, M, inputs[0].dptr<DType>(), uniform.dptr_, outputs[0].dptr<int>(),
-      param.get_prob ? outputs[1].dptr<DType>() : nullptr);
+    MSHADOW_TYPE_SWITCH(outputs[0].type_flag_, IType, {
+      Kernel<SampleMultinomialKernel, xpu>::Launch(
+        s, N, K, M, inputs[0].dptr<DType>(), uniform.dptr_, outputs[0].dptr<IType>(),
+        param.get_prob ? outputs[1].dptr<DType>() : nullptr);
+    });
   });
 }
 
@@ -182,9 +192,11 @@ void SampleMultinomialBackward(const nnvm::NodeAttrs& attrs,
       Tensor<xpu, 1, DType> out = outputs[0].FlatTo1D<xpu, DType>(s);
       out = 0;
     }
-    Kernel<kernel, xpu>::Launch(
-      s, N, K, M, inputs[0].dptr<DType>(), inputs[1].dptr<DType>(),
-      inputs[2].dptr<int>(), outputs[0].dptr<DType>());
+    MSHADOW_TYPE_SWITCH(inputs[2].type_flag_, IType, {
+      Kernel<kernel, xpu>::Launch(
+        s, N, K, M, inputs[0].dptr<DType>(), inputs[1].dptr<DType>(),
+        inputs[2].dptr<IType>(), outputs[0].dptr<DType>());
+    });
   });
 }
 

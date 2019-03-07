@@ -26,11 +26,14 @@
 
 #include "./convolution-inl.h"
 #include "../elemwise_op_common.h"
-#include "./mkldnn/mkldnn_ops-inl.h"
-#include "./mkldnn/mkldnn_base-inl.h"
+#include "../operator_common.h"
 #if MXNET_USE_NNPACK == 1
-#include "./nnpack/nnpack_convolution-inl.h"
+#include "../nnpack/nnpack_pooling-inl.h"
 #endif  // MXNET_USE_NNPACK
+#if MXNET_USE_MKLDNN == 1
+#include "./mkldnn/mkldnn_base-inl.h"
+#include "./mkldnn/mkldnn_ops-inl.h"
+#endif  // MXNET_USE_MKLDNN
 
 namespace mxnet {
 namespace op {
@@ -54,7 +57,8 @@ static void ConvolutionComputeExCPU(const nnvm::NodeAttrs& attrs,
                                     const std::vector<NDArray>& inputs,
                                     const std::vector<OpReqType>& req,
                                     const std::vector<NDArray>& outputs) {
-  if (SupportMKLDNNConv(inputs[0])) {
+  const ConvolutionParam& params = nnvm::get<ConvolutionParam>(attrs.parsed);
+  if (SupportMKLDNNConv(params, inputs[0])) {
     MKLDNN_OPCHECK_INIT(false, outputs.size(), inputs, outputs);
     MKLDNNConvolutionForward(attrs, ctx, inputs, req, outputs);
     MKLDNN_OPCHECK_RUN(ConvolutionCompute<cpu>, attrs, ctx, inputs, req, outputs);
@@ -68,7 +72,8 @@ static void ConvolutionGradComputeExCPU(const nnvm::NodeAttrs& attrs,
                                         const std::vector<NDArray>& inputs,
                                         const std::vector<OpReqType>& req,
                                         const std::vector<NDArray>& outputs) {
-  if (SupportMKLDNNConv(inputs[0])) {
+  const ConvolutionParam& params = nnvm::get<ConvolutionParam>(attrs.parsed);
+  if (SupportMKLDNNConv(params, inputs[0])) {
     MKLDNN_OPCHECK_INIT(true, outputs.size(), inputs, outputs);
     MKLDNNConvolutionBackward(attrs, ctx, inputs, req, outputs);
     MKLDNN_OPCHECK_RUN(ConvolutionGradCompute<cpu>, attrs, ctx, inputs, req, outputs);
@@ -79,8 +84,8 @@ static void ConvolutionGradComputeExCPU(const nnvm::NodeAttrs& attrs,
 #endif
 
 static bool ConvolutionShape(const nnvm::NodeAttrs& attrs,
-                             std::vector<TShape> *in_shape,
-                             std::vector<TShape> *out_shape) {
+                             mxnet::ShapeVector *in_shape,
+                             mxnet::ShapeVector *out_shape) {
   using namespace mshadow;
   const ConvolutionParam& param_ = nnvm::get<ConvolutionParam>(attrs.parsed);
   if (!param_.no_bias) {
@@ -89,8 +94,8 @@ static bool ConvolutionShape(const nnvm::NodeAttrs& attrs,
     CHECK_EQ(in_shape->size(), 2U) << "Input:[data, weight]";
   }
   // CHECK_EQ(out_shape->size(), 1) << "Output: [output]";
-  out_shape->resize(1, TShape());
-  const TShape &dshp = (*in_shape)[conv::kData];
+  out_shape->resize(1, mxnet::TShape());
+  const mxnet::TShape &dshp = (*in_shape)[conv::kData];
   if (dshp.ndim() ==  0) return false;
 
   if (param_.kernel.ndim() == 1) {
@@ -274,7 +279,7 @@ static bool ConvolutionType(const nnvm::NodeAttrs& attrs,
   CHECK_GE(in_type->size(), 1U);
   int dtype = (*in_type)[0];
   CHECK_NE(dtype, -1) << "First input must have specified type";
-  for (index_t i = 0; i < in_type->size(); ++i) {
+  for (size_t i = 0; i < in_type->size(); ++i) {
     if ((*in_type)[i] == -1) {
       (*in_type)[i] = dtype;
     } else {
@@ -286,25 +291,19 @@ static bool ConvolutionType(const nnvm::NodeAttrs& attrs,
   return true;
 }
 
+#if MXNET_USE_MKLDNN == 1
 inline static bool ConvStorageType(const nnvm::NodeAttrs& attrs,
                                    const int dev_mask,
                                    DispatchMode* dispatch_mode,
-                                   std::vector<int> *in_attrs,
-                                   std::vector<int> *out_attrs) {
+                                   std::vector<int>* in_attrs,
+                                   std::vector<int>* out_attrs) {
   const ConvolutionParam& param = nnvm::get<ConvolutionParam>(attrs.parsed);
   uint32_t in_expected = param.no_bias ? 2 : 3;
   CHECK_EQ(in_attrs->size(), in_expected);
   CHECK_EQ(out_attrs->size(), 1);
 
-  DispatchMode wanted_mode;
-#if MXNET_USE_MKLDNN == 1
-  if (dev_mask == mshadow::cpu::kDevMask)
-    wanted_mode = DispatchMode::kFComputeEx;
-  else
-#endif
-    wanted_mode = DispatchMode::kFCompute;
-  return storage_type_assign(out_attrs, mxnet::kDefaultStorage,
-                             dispatch_mode, wanted_mode);
+  return MKLDNNStorageType(attrs, dev_mask, true, dispatch_mode, in_attrs,
+                           out_attrs);
 }
 
 inline static bool BackwardConvStorageType(const nnvm::NodeAttrs& attrs,
@@ -318,18 +317,12 @@ inline static bool BackwardConvStorageType(const nnvm::NodeAttrs& attrs,
   CHECK_EQ(in_attrs->size(), in_expected);
   CHECK_EQ(out_attrs->size(), out_expected);
 
-  DispatchMode wanted_mode;
-#if MXNET_USE_MKLDNN == 1
-  if (dev_mask == mshadow::cpu::kDevMask)
-    wanted_mode = DispatchMode::kFComputeEx;
-  else
-#endif
-    wanted_mode = DispatchMode::kFCompute;
-  return storage_type_assign(out_attrs, mxnet::kDefaultStorage,
-                             dispatch_mode, wanted_mode);
+  return MKLDNNStorageType(attrs, dev_mask, true, dispatch_mode, in_attrs,
+                           out_attrs);
 }
+#endif
 
-static void ConvolutionParamParser(nnvm::NodeAttrs* attrs) {
+void ConvolutionParamParser(nnvm::NodeAttrs* attrs) {
   using namespace mshadow;
   ConvolutionParam param_;
   try {
@@ -363,6 +356,18 @@ static void ConvolutionParamParser(nnvm::NodeAttrs* attrs) {
     if (param_.dilate.ndim() == 0) param_.dilate = Shape3(1, 1, 1);
     if (param_.pad.ndim() == 0) param_.pad = Shape3(0, 0, 0);
   }
+  CHECK_EQ(param_.kernel.ndim(), param_.stride.ndim())
+    << "Stride must have the same number of dimensions with kernel_size,"
+    << "but kernel_size is set to " << param_.kernel << " while stride is "
+    << param_.stride;
+  CHECK_EQ(param_.kernel.ndim(), param_.dilate.ndim())
+    << "Dilate must have the same number of dimensions with kernel_size,"
+    << "but kernel_size is set to " << param_.kernel << " while dilate is "
+    << param_.dilate;
+  CHECK_EQ(param_.kernel.ndim(), param_.pad.ndim())
+    << "Padding must have the same number of dimensions with kernel_size,"
+    << "but kernel_size is set to " << param_.kernel << " while padding is "
+    << param_.pad;
   attrs->parsed = std::move(param_);
 }
 
@@ -412,7 +417,7 @@ then we have::
 If ``no_bias`` is set to be true, then the ``bias`` term is ignored.
 
 The default data ``layout`` is *NCHW*, namely *(batch_size, channel, height,
-width)*. We can choose other layouts such as *NHWC*.
+width)*. We can choose other layouts such as *NWC*.
 
 If ``num_group`` is larger than 1, denoted by *g*, then split the input ``data``
 evenly into *g* parts along the channel axis, and also evenly split ``weight``
@@ -468,11 +473,18 @@ There are other options to tune the performance.
   else
     return std::vector<std::string>{"data", "weight", "bias"};
 })
-.set_attr<nnvm::FInferShape>("FInferShape", ConvolutionShape)
+.set_attr<nnvm::FListOutputNames>("FListOutputNames",
+    [](const NodeAttrs& attrs) {
+    return std::vector<std::string>{"output"};
+})
+.set_attr<mxnet::FInferShape>("FInferShape", ConvolutionShape)
 .set_attr<nnvm::FInferType>("FInferType", ConvolutionType)
+#if MXNET_USE_MKLDNN == 1
 .set_attr<FInferStorageType>("FInferStorageType", ConvStorageType)
+#endif
 .set_attr<FCompute>("FCompute<cpu>", ConvolutionCompute<cpu>)
 #if MXNET_USE_MKLDNN == 1
+.set_attr<bool>("TIsMKLDNN", true)
 .set_attr<FComputeEx>("FComputeEx<cpu>", ConvolutionComputeExCPU)
 #endif
 .set_attr<nnvm::FGradient>("FGradient", ConvolutionGrad{"_backward_Convolution"})
@@ -490,12 +502,15 @@ NNVM_REGISTER_OP(_backward_Convolution)
   return params.no_bias ? 2 : 3;
 })
 .set_attr<nnvm::TIsBackward>("TIsBackward", true)
+#if MXNET_USE_MKLDNN == 1
 .set_attr<FInferStorageType>("FInferStorageType", BackwardConvStorageType)
+#endif
 .set_attr<FResourceRequest>("FResourceRequest", [](const NodeAttrs& n) {
   return std::vector<ResourceRequest>{ResourceRequest::kTempSpace};
 })
 .set_attr_parser(ConvolutionParamParser)
 #if MXNET_USE_MKLDNN == 1
+.set_attr<bool>("TIsMKLDNN", true)
 .set_attr<FComputeEx>("FComputeEx<cpu>", ConvolutionGradComputeExCPU)
 #endif
 .set_attr<FCompute>("FCompute<cpu>", ConvolutionGradCompute<cpu>);

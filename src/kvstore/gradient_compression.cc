@@ -23,30 +23,13 @@
  * \author Rahul Huilgol
  */
 
-#include <sstream>
 #include <vector>
+#include "kvstore_local.h"
 #include "gradient_compression.h"
 #include "gradient_compression-inl.h"
 
 namespace mxnet {
 namespace kvstore {
-
-/*!
- * \brief Splits a string into smaller strings using char as delimiter
- * Example: "a,b,c,,d" is split into ["a","b","c","","d"]
- * \param s string to split
- * \param delim char to split string around
- * \param result container for tokens extracted after splitting
- */
-template<typename Out>
-void split(const std::string &s, const char delim, Out result) {
-  std::stringstream ss;
-  ss.str(s);
-  std::string item;
-  while (std::getline(ss, item, delim)) {
-    *(result++) = item;
-  }
-}
 
 DMLC_REGISTER_PARAMETER(GradientCompressionParam);
 
@@ -90,7 +73,7 @@ std::string GradientCompression::EncodeParams() {
 
 void GradientCompression::DecodeParams(const std::string &s) {
   std::vector<std::string> elems;
-  split(s, ',', std::back_inserter(elems));
+  mxnet::kvstore::split(s, ',', std::back_inserter(elems));
   type_ = static_cast<CompressionType>(stoi(elems[0]));
   if (elems.size() > 1) {
     if (!elems[1].empty()) {
@@ -129,7 +112,7 @@ void GradientCompression::Quantize(const mxnet::NDArray &from, mxnet::NDArray *t
         std::vector<mxnet::TBlob> inputs = {from.data(), residual->data(), to->data()};
         Quantize2BitImpl(ctx.get_stream<mshadow::cpu>(), inputs, threshold);
       }, from.ctx(), {from.var()}, {to->var(), residual->var()},
-      mxnet::FnProperty::kNormal, priority, PROFILER_MESSAGE("QuantizeCPU"));
+      mxnet::FnProperty::kNormal, priority, "QuantizeCPU");
     } else {
 #if MXNET_USE_CUDA
       if (a == mshadow::gpu::kDevMask && b == mshadow::gpu::kDevMask) {
@@ -139,7 +122,7 @@ void GradientCompression::Quantize(const mxnet::NDArray &from, mxnet::NDArray *t
           // Wait GPU kernel to complete
           ctx.get_stream<mshadow::gpu>()->Wait();
         }, from.ctx(), {from.var()}, {to->var(), residual->var()},
-        mxnet::FnProperty::kNormal, priority, PROFILER_MESSAGE("QuantizeGPU"));
+        mxnet::FnProperty::kNormal, priority, "QuantizeGPU");
       } else {
         LOG(FATAL) << "unknown device mask";
       }
@@ -165,7 +148,7 @@ void GradientCompression::Dequantize(const mxnet::NDArray &from, mxnet::NDArray 
         std::vector<mxnet::TBlob> inputs = {from.data(), to->data()};
         Dequantize2BitImpl(ctx.get_stream<mshadow::cpu>(), inputs, threshold);
       }, from.ctx(), {from.var()}, {to->var()},
-      mxnet::FnProperty::kNormal, priority, PROFILER_MESSAGE("DequantizeCPU"));
+      mxnet::FnProperty::kNormal, priority, "DequantizeCPU");
     } else {
 #if MXNET_USE_CUDA
       if (a == mshadow::gpu::kDevMask && b == mshadow::gpu::kDevMask) {
@@ -175,7 +158,7 @@ void GradientCompression::Dequantize(const mxnet::NDArray &from, mxnet::NDArray 
           // Wait GPU kernel to complete
           ctx.get_stream<mshadow::gpu>()->Wait();
         }, from.ctx(), {from.var()}, {to->var()},
-        mxnet::FnProperty::kNormal, priority, PROFILER_MESSAGE("DequantizeGPU"));
+        mxnet::FnProperty::kNormal, priority, "DequantizeGPU");
       } else {
         LOG(FATAL) << "unknown device mask";
       }

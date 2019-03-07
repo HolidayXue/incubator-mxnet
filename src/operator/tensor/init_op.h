@@ -44,12 +44,12 @@ namespace mxnet {
 namespace op {
 
 struct InitOpParam : public dmlc::Parameter<InitOpParam> {
-  TShape shape;
+  mxnet::TShape shape;
   std::string ctx;
   int dtype;
   DMLC_DECLARE_PARAMETER(InitOpParam) {
     DMLC_DECLARE_FIELD(shape)
-    .set_default(TShape())
+    .set_default(mxnet::TShape())
     .describe("The shape of the output");
     DMLC_DECLARE_FIELD(ctx)
     .set_default("")
@@ -57,6 +57,24 @@ struct InitOpParam : public dmlc::Parameter<InitOpParam> {
               "Only used for imperative calls.");
     DMLC_DECLARE_FIELD(dtype).set_default(mshadow::kFloat32)
     MXNET_ADD_ALL_TYPES
+    .describe("Target data type.");
+  }
+};
+
+struct InitOpWithoutDTypeParam : public dmlc::Parameter<InitOpWithoutDTypeParam> {
+  mxnet::TShape shape;
+  std::string ctx;
+  int dtype;
+  DMLC_DECLARE_PARAMETER(InitOpWithoutDTypeParam) {
+    DMLC_DECLARE_FIELD(shape)
+    .set_default(mxnet::TShape())
+    .describe("The shape of the output");
+    DMLC_DECLARE_FIELD(ctx)
+    .set_default("")
+    .describe("Context of output, in format [cpu|gpu|cpu_pinned](n)."
+              "Only used for imperative calls.");
+    DMLC_DECLARE_FIELD(dtype)
+    .set_default(-1)
     .describe("Target data type.");
   }
 };
@@ -88,6 +106,7 @@ struct EyeParam : public dmlc::Parameter<EyeParam> {
     .add_enum("float64", mshadow::kFloat64)
     .add_enum("float16", mshadow::kFloat16)
     .add_enum("uint8", mshadow::kUint8)
+    .add_enum("int8", mshadow::kInt8)
     .add_enum("int32", mshadow::kInt32)
     .add_enum("int64", mshadow::kInt64)
     .describe("Target data type.");
@@ -96,8 +115,8 @@ struct EyeParam : public dmlc::Parameter<EyeParam> {
 
 template<typename ParamType>
 inline bool InitEyeShape(const nnvm::NodeAttrs& attrs,
-                         std::vector<TShape> *in_attrs,
-                         std::vector<TShape> *out_attrs) {
+                         mxnet::ShapeVector *in_attrs,
+                         mxnet::ShapeVector *out_attrs) {
   const ParamType& param = nnvm::get<ParamType>(attrs.parsed);
   CHECK_EQ(in_attrs->size(), 0U);
   CHECK_EQ(out_attrs->size(), 1U);
@@ -122,6 +141,7 @@ struct RangeParam : public dmlc::Parameter<RangeParam> {
   dmlc::optional<double> stop;
   double step;
   int repeat;
+  bool infer_range;
   std::string ctx;
   int dtype;
   DMLC_DECLARE_PARAMETER(RangeParam) {
@@ -139,6 +159,10 @@ struct RangeParam : public dmlc::Parameter<RangeParam> {
     .set_default(1)
     .describe("The repeating time of all elements."
               " E.g repeat=3, the element a will be repeated three times --> a, a, a.");
+    DMLC_DECLARE_FIELD(infer_range)
+    .set_default(false)
+    .describe("When set to True, infer the stop position from the start, step, "
+              "repeat, and output tensor size.");
     DMLC_DECLARE_FIELD(ctx)
     .set_default("")
     .describe("Context of output, in format [cpu|gpu|cpu_pinned](n)."
@@ -151,13 +175,13 @@ struct RangeParam : public dmlc::Parameter<RangeParam> {
 
 /*! \brief Initialize and fill output with an arbitrary value */
 struct InitOpWithScalarParam : dmlc::Parameter<InitOpWithScalarParam> {
-  TShape shape;
+  mxnet::TShape shape;
   std::string ctx;
   int dtype;
   double value;
   DMLC_DECLARE_PARAMETER(InitOpWithScalarParam) {
     DMLC_DECLARE_FIELD(shape)
-      .set_default(TShape())
+      .set_default(mxnet::TShape())
       .describe("The shape of the output");
     DMLC_DECLARE_FIELD(ctx)
       .set_default("")
@@ -175,7 +199,7 @@ struct InitOpWithScalarParam : dmlc::Parameter<InitOpWithScalarParam> {
 inline void RangeParamParser(nnvm::NodeAttrs* attrs) {
   RangeParam param;
   param.Init(attrs->dict);
-  if (!static_cast<bool>(param.stop)) {
+  if (!static_cast<bool>(param.infer_range) && !static_cast<bool>(param.stop)) {
     param.stop = param.start;
     param.start = 0;
   }
@@ -184,8 +208,8 @@ inline void RangeParamParser(nnvm::NodeAttrs* attrs) {
 
 template<typename ParamType>
 inline bool InitShape(const nnvm::NodeAttrs& attrs,
-                      std::vector<TShape> *in_attrs,
-                      std::vector<TShape> *out_attrs) {
+                      mxnet::ShapeVector *in_attrs,
+                      mxnet::ShapeVector *out_attrs) {
   const ParamType& param = nnvm::get<ParamType>(attrs.parsed);
   CHECK_EQ(in_attrs->size(), 0U);
   CHECK_EQ(out_attrs->size(), 1U);
@@ -343,9 +367,10 @@ inline void FillDnsZerosRspImpl(mshadow::Stream<xpu> *s, NDArray *dst) {
  */
 template<typename xpu>
 void FillZerosRspImpl(mshadow::Stream<xpu> *, const NDArray& dst) {
+  CHECK_EQ(dst.storage_type(), kRowSparseStorage) << "dst should be an RSP NDArray";
   if (dst.storage_initialized()) {
     // reset the shapes if it's not zeros (set_aux_shape() will set storage_shape to zero as well)
-    dst.set_aux_shape(rowsparse::kIdx, TShape(mshadow::Shape1(0)));
+    dst.set_aux_shape(rowsparse::kIdx, mxnet::TShape(mshadow::Shape1(0)));
   }
 }
 
@@ -355,6 +380,7 @@ void FillZerosRspImpl(mshadow::Stream<xpu> *, const NDArray& dst) {
  * \param dst - NDArray which is to be set to "all zeroes"
  */
 inline void FillZerosCsrImpl(mshadow::Stream<mshadow::cpu> *s, const NDArray& dst) {
+  CHECK_EQ(dst.storage_type(), kCSRStorage) << "dst is not a CSR NDArray";
   dst.set_aux_shape(csr::kIdx, mshadow::Shape1(0));
   dst.CheckAndAllocAuxData(csr::kIndPtr, mshadow::Shape1(dst.shape()[0] + 1));
   TBlob indptr_data = dst.aux_data(csr::kIndPtr);
@@ -382,8 +408,8 @@ void FillComputeZerosEx(const nnvm::NodeAttrs& attrs,
   Stream<xpu> *s = ctx.get_stream<xpu>();
   CHECK_EQ(outputs.size(), 1);
   auto stype = outputs[0].storage_type();
-  if (req[0] == kNullOp) return;
-  CHECK_EQ(req[0], kWriteTo) << "kWriteTo is expected for FillComputeZerosEx";
+  // x + 0 == x
+  if (req[0] == kNullOp || req[0] == kAddTo) return;
   if (stype == kRowSparseStorage) {
     FillZerosRspImpl(s, outputs[0]);
   } else if (stype == kCSRStorage) {
@@ -427,7 +453,7 @@ void EyeFill(const nnvm::NodeAttrs& attrs,
 
 struct range_fwd {
   template<typename DType>
-  MSHADOW_XINLINE static void Map(int i, int repeat, DType start, DType step,
+  MSHADOW_XINLINE static void Map(index_t i, int repeat, DType start, DType step,
                                   int req, DType* out) {
     KERNEL_ASSIGN(out[i], req, start + (i/repeat) * step);
   }
@@ -445,8 +471,8 @@ void RangeCompute(const nnvm::NodeAttrs& attrs,
   MSHADOW_TYPE_SWITCH(outputs[0].type_flag_, DType, {
       // Force unsigned params to take two's complement form on ARM to ensure consistency with x86
       // results.  Casting negative floats to unsigned types is undefined in the CPP standard.
-      auto step = std::is_signed<DType>() ? param.step : static_cast<int>(param.step);
-      auto start = std::is_signed<DType>() ? param.start : static_cast<int>(param.start);
+      auto step = std::is_signed<DType>() ? param.step : static_cast<index_t>(param.step);
+      auto start = std::is_signed<DType>() ? param.start : static_cast<index_t>(param.start);
       Kernel<range_fwd, xpu>::Launch(s,
                                      outputs[0].Size(),
                                      static_cast<int>(param.repeat),
@@ -459,8 +485,8 @@ void RangeCompute(const nnvm::NodeAttrs& attrs,
 
 
 inline bool RangeShape(const nnvm::NodeAttrs& attrs,
-                       std::vector<TShape> *in_attrs,
-                       std::vector<TShape> *out_attrs) {
+                       mxnet::ShapeVector *in_attrs,
+                       mxnet::ShapeVector *out_attrs) {
   const RangeParam& param = nnvm::get<RangeParam>(attrs.parsed);
   CHECK_EQ(in_attrs->size(), 0U);
   CHECK_EQ(out_attrs->size(), 1U);
@@ -468,6 +494,9 @@ inline bool RangeShape(const nnvm::NodeAttrs& attrs,
     << "Range does not support step=0, received " << param.step;
   CHECK(param.repeat > 0)
     << "Range only supports repeat > 0, received " << param.repeat;
+  if (param.infer_range && !param.stop.has_value()) {
+    return false;
+  }
   if (param.step > 0) {
     CHECK(param.start < param.stop.value())
       << "Invalid range (start, stop, step) = "
@@ -479,7 +508,7 @@ inline bool RangeShape(const nnvm::NodeAttrs& attrs,
   }
   const double out_size = std::ceil((param.stop.value() - param.start) / param.step)
                           * param.repeat;
-  SHAPE_ASSIGN_CHECK(*out_attrs, 0, TShape({static_cast<nnvm::dim_t>(out_size)}));
+  SHAPE_ASSIGN_CHECK(*out_attrs, 0, mxnet::TShape({static_cast<nnvm::dim_t>(out_size)}));
   return true;
 }
 

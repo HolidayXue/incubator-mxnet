@@ -26,6 +26,7 @@ from ..ndarray_doc import _build_doc
 from ..base import mx_uint, check_call, _LIB, py_str, _init_op_module, _Null # pylint: disable=unused-import
 
 
+# pylint: disable=too-many-locals
 def _generate_ndarray_function_code(handle, name, func_name, signature_only=False):
     """Generate function for ndarray op by handle and function name."""
     real_name = ctypes.c_char_p()
@@ -166,3 +167,14 @@ def _make_ndarray_function(handle, name, func_name):
     return ndarray_function
 
 _init_op_module('mxnet', 'ndarray', _make_ndarray_function)
+
+# Update operator documentation with added float support
+# Note that we can only do this after the op module is initialized
+# Otherwise the backend operators cannot be found
+# pylint: disable=wrong-import-position
+from .contrib import adamw_update, mp_adamw_update
+from ._internal import _adamw_update, _mp_adamw_update
+adamw_update.__doc__ = _adamw_update.__doc__.replace("rescale_grad : NDArray",
+                                                     "rescale_grad : NDArray or float")
+mp_adamw_update.__doc__ = _mp_adamw_update.__doc__.replace("rescale_grad : NDArray",
+                                                           "rescale_grad : NDArray or float")

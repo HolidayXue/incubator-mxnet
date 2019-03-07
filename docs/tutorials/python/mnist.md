@@ -1,3 +1,20 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 # Handwritten Digit Recognition
 
 In this tutorial, we'll give you a step by step walk-through of how to build a hand-written digit classifier using the [MNIST](https://en.wikipedia.org/wiki/MNIST_database) dataset. For someone new to deep learning, this exercise is arguably the "Hello World" equivalent.
@@ -28,6 +45,12 @@ The following source code downloads and loads the images and the corresponding l
 ```python
 import mxnet as mx
 mnist = mx.test_utils.get_mnist()
+
+# Fix the seed
+mx.random.seed(42)
+
+# Set the compute context, GPU is available otherwise CPU
+ctx = mx.gpu() if mx.test_utils.list_gpus() else mx.cpu()
 ```
 
 After running the above source code, the entire MNIST dataset should be fully loaded into memory. Note that for large datasets it is not feasible to pre-load the entire dataset first like we did here. What is needed is a mechanism by which we can quickly and efficiently stream data directly from the source. MXNet Data iterators come to the rescue here by providing exactly that. Data iterator is the mechanism by which we feed input data into an MXNet training algorithm and they are very simple to initialize and use and are optimized for speed. During training, we typically process training samples in small batches and over the entire training lifetime will end up processing each training example multiple times. In this tutorial, we'll configure the data iterator to feed examples in batches of 100. Keep in mind that each example is a 28x28 grayscale image and the corresponding label.
@@ -97,8 +120,8 @@ Typically, one runs the training until convergence, which means that we have lea
 ```python
 import logging
 logging.getLogger().setLevel(logging.DEBUG)  # logging to stdout
-# create a trainable module on CPU
-mlp_model = mx.mod.Module(symbol=mlp, context=mx.cpu())
+# create a trainable module on compute context
+mlp_model = mx.mod.Module(symbol=mlp, context=ctx)
 mlp_model.fit(train_iter,  # train data
               eval_data=val_iter,  # validation data
               optimizer='sgd',  # use SGD to train
@@ -164,8 +187,7 @@ lenet = mx.sym.SoftmaxOutput(data=fc2, name='softmax')
 Now we train LeNet with the same hyper-parameters as before. Note that, if a GPU is available, we recommend using it. This greatly speeds up computation given that LeNet is more complex and compute-intensive than the previous multilayer perceptron. To do so, we only need to change `mx.cpu()` to `mx.gpu()` and MXNet takes care of the rest. Just like before, we'll stop training after 10 epochs.
 
 ```python
-# create a trainable module on CPU, change to mx.gpu() if GPU is available
-lenet_model = mx.mod.Module(symbol=lenet, context=mx.cpu())
+lenet_model = mx.mod.Module(symbol=lenet, context=ctx)
 # train with the same
 lenet_model.fit(train_iter,
                 eval_data=val_iter,

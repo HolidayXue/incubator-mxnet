@@ -1,3 +1,20 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 # Image API
 
 ## Overview
@@ -16,8 +33,11 @@ images provided in
 .. autosummary::
     :nosignatures:
 
+    image.imread
     image.imdecode
+    image.imresize
     image.scale_down
+    image.copyMakeBorder
     image.resize_short
     image.fixed_crop
     image.random_crop
@@ -43,7 +63,7 @@ Iterators support loading image from binary `Record IO` and raw image files.
 ...     print(d.shape)
 >>> # we can apply lots of augmentations as well
 >>> data_iter = mx.image.ImageIter(4, (3, 224, 224), path_imglist='data/custom.lst',
-                                   rand_crop=resize=True, rand_mirror=True, mean=True,
+                                   rand_crop=True, rand_resize=True, rand_mirror=True, mean=True,
                                    brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1,
                                    pca_noise=0.1, rand_gray=0.05)
 >>> data = data_iter.next()
@@ -56,7 +76,7 @@ Iterators support loading image from binary `Record IO` and raw image files.
 
 We use helper function to initialize augmenters
 ```eval_rst
-    .. currentmodule:: mxnet
+.. currentmodule:: mxnet
 .. autosummary::
     :nosignatures:
 
@@ -88,6 +108,7 @@ A list of supporting augmenters
     image.CastAug
 ```
 
+#### Image Iterator for Object Detection
 Similar to `ImageIter`, `ImageDetIter` is designed for `Object Detection` tasks.
 ```eval_rst
 .. autosummary::
@@ -155,15 +176,18 @@ and a list of augmenters specific for `Object detection` is provided
 
 ## API Reference
 
-<script type="text/javascript" src='../../_static/js/auto_module_index.js'></script>
+<script type="text/javascript" src='../../../_static/js/auto_module_index.js'></script>
 
 ```eval_rst
 .. automodule:: mxnet.image
 .. autoclass:: mxnet.image.ImageIter
     :members:
 
+.. automethod:: mxnet.image.imread
 .. automethod:: mxnet.image.imdecode
+.. automethod:: mxnet.image.imresize
 .. automethod:: mxnet.image.scale_down
+.. automethod:: mxnet.image.copyMakeBorder
 .. automethod:: mxnet.image.resize_short
 .. automethod:: mxnet.image.fixed_crop
 .. automethod:: mxnet.image.random_crop
@@ -178,6 +202,7 @@ and a list of augmenters specific for `Object detection` is provided
 .. autoclass:: mxnet.image.RandomCropAug
 .. autoclass:: mxnet.image.RandomSizedCropAug
 .. autoclass:: mxnet.image.CenterCropAug
+.. autoclass:: mxnet.image.SequentialAug
 .. autoclass:: mxnet.image.RandomOrderAug
 .. autoclass:: mxnet.image.BrightnessJitterAug
 .. autoclass:: mxnet.image.ContrastJitterAug

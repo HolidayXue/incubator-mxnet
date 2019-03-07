@@ -30,12 +30,17 @@
 namespace mxnet {
 namespace op {
 template<>
-Operator *CreateOp<cpu>(LeakyReLUParam param) {
-  return new LeakyReLUOp<cpu>(param);
+Operator *CreateOp<cpu>(LeakyReLUParam param, int dtype) {
+  Operator* op = nullptr;
+  MSHADOW_REAL_TYPE_SWITCH(dtype, DType, {
+    op = new LeakyReLUOp<cpu, DType>(param);
+  });
+  return op;
 }
 
-Operator *LeakyReLUProp::CreateOperator(Context ctx) const {
-  DO_BIND_DISPATCH(CreateOp, param_);
+Operator *LeakyReLUProp::CreateOperatorEx(Context ctx, mxnet::ShapeVector *in_shape,
+                                          std::vector<int> *in_type) const {
+  DO_BIND_DISPATCH(CreateOp, param_, in_type->at(0));
 }
 
 DMLC_REGISTER_PARAMETER(LeakyReLUParam);
@@ -49,6 +54,8 @@ when the input is negative and has a slope of one when input is positive.
 The following modified ReLU Activation functions are supported:
 
 - *elu*: Exponential Linear Unit. `y = x > 0 ? x : slope * (exp(x)-1)`
+- *selu*: Scaled Exponential Linear Unit. `y = lambda * (x > 0 ? x : alpha * (exp(x) - 1))` where
+  *lambda = 1.0507009873554804934193349852946* and *alpha = 1.6732632423543772848170429916717*.
 - *leaky*: Leaky ReLU. `y = x > 0 ? x : slope * x`
 - *prelu*: Parametric ReLU. This is same as *leaky* except that `slope` is learnt during training.
 - *rrelu*: Randomized ReLU. same as *leaky* but the `slope` is uniformly and randomly chosen from

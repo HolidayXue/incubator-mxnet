@@ -1,3 +1,20 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 # Large Scale Image Classification
 
 Training a neural network with a large number of images presents several challenges. Even with the latest GPUs, it is not possible to train large networks using a large number of images in a reasonable amount of time using a single GPU. This problem can be somewhat mitigated by using multiple GPUs in a single machine. But there is a limit to the number of GPUs that can be attached to one machine (typically 8 or 16). This tutorial explains how to train large networks with terabytes of data using multiple machines each containing multiple GPUs.
@@ -10,6 +27,14 @@ Training a neural network with a large number of images presents several challen
 ```
 $ pip install opencv-python
 ```
+
+```python
+import mxnet as mx
+print(mx.__version__)
+```
+
+`1.1.0`<!--notebook-skip-line-->
+
 
 ## Preprocessing
 
@@ -60,7 +85,7 @@ n00120010
 ```
 
 ### Remove uncommon classes for transfer learning (optional)
-A common reason to train a network on ImageNet data is to use it for transfer learning (including feature extraction or fine-tuning other models). According to [this](https://arxiv.org/pdf/1608.08614v1.pdf) study, classes with too few images don’t help in transfer learning. So, we could remove classes with fewer than a certain number of images. The following code will remove classes with less than 500 images.
+A common reason to train a network on ImageNet data is to use it for transfer learning (including feature extraction or fine-tuning other models). According to [this](https://arxiv.org/pdf/1608.08614v1.pdf) study, classes with too few images don't help in transfer learning. So, we could remove classes with fewer than a certain number of images. The following code will remove classes with less than 500 images.
 
 ```
 BAK=${ROOT}_filtered
@@ -77,7 +102,7 @@ done
 ```
 
 ### Generate a validation set
-To ensure we don’t overfit the data, we will create a validation set separate from the training set. During training, we will monitor loss on the validation set frequently. We create the validation set by picking fifty random images from each class and moving them to the validation set.
+To ensure we don't overfit the data, we will create a validation set separate from the training set. During training, we will monitor loss on the validation set frequently. We create the validation set by picking fifty random images from each class and moving them to the validation set.
 ```
 VAL_ROOT=${ROOT}_val
 mkdir -p ${VAL_ROOT}
@@ -92,7 +117,7 @@ done
 ```
 
 ### Pack images into record files
-While MXNet can read image files directly, it is recommended to pack the image files into a recordIO file for increased performance. MXNet provides a tool (tools/im2rec.py) to do this. To use this tool, MXNet and OpenCV’s python module needs to be installed in the system.
+While MXNet can read image files directly, it is recommended to pack the image files into a recordIO file for increased performance. MXNet provides a tool (tools/im2rec.py) to do this. To use this tool, MXNet and OpenCV's python module needs to be installed in the system.
 
 Set the environment variable `MXNET` to point to the MXNet installation directory and `NAME` to the name of the dataset. Here, we assume MXNet is installed at `~/mxnet`
 
@@ -149,7 +174,7 @@ We will use 16 machines (P2.16x instances), each containing 16 GPUs (Tesla K80).
 
 AWS CloudFormation makes it very easy to create deep learning clusters. We follow instructions from [this](https://aws.amazon.com/blogs/compute/distributed-deep-learning-made-easy/) page and create a deep learning cluster with 16 P2.16x instances.
 
-We load the data and code in the first machine (we’ll refer to this machine as master). We share both the data and code to other machines using EFS.
+We load the data and code in the first machine (we'll refer to this machine as master). We share both the data and code to other machines using EFS.
 
 If you are setting up your cluster manually, without using AWS CloudFormation, remember to do the following:
 1. Compile MXNet using `USE_DIST_KVSTORE=1` to enable distributed training.
@@ -169,7 +194,7 @@ If you are setting up your cluster manually, without using AWS CloudFormation, r
    ...
    ubuntu@ip-10-0-1-199:~$
    ```
-   One way to do this is to use ssh agent forwarding. Please check [this](https://aws.amazon.com/blogs/security/securely-connect-to-linux-instances-running-in-a-private-amazon-vpc/) page to learn how to set this up. In short, you’ll configure all machines to login using a particular certificate (mycert.pem) which is present on your local machine. You then login to the master using the certificate and the `-A` switch to enable agent forwarding. Now, from the master, you should be able to login to any other machine in the cluster by providing just the hostname (example: `ssh deeplearning-worker2`).
+   One way to do this is to use ssh agent forwarding. Please check [this](https://aws.amazon.com/blogs/security/securely-connect-to-linux-instances-running-in-a-private-amazon-vpc/) page to learn how to set this up. In short, you'll configure all machines to login using a particular certificate (mycert.pem) which is present on your local machine. You then login to the master using the certificate and the `-A` switch to enable agent forwarding. Now, from the master, you should be able to login to any other machine in the cluster by providing just the hostname (example: `ssh deeplearning-worker2`).
 
 ### Run Training
 After the cluster is setup, login to master and run the following command from ${MXNET}/example/image-classification
@@ -250,6 +275,8 @@ It is often straightforward to achieve a reasonable validation accuracy, but ach
 - Check [this](http://mxnet.io/faq/perf.html) page for more details.
 
 ### Memory
-If the batch size is too big, it can exhaust GPU memory. If this happens, you’ll see the error message “cudaMalloc failed: out of memory” or something similar. There are a couple of ways to fix this:
+If the batch size is too big, it can exhaust GPU memory. If this happens, you'll see the error message "cudaMalloc failed: out of memory" or something similar. There are a couple of ways to fix this:
 - Reduce the batch size.
 - Set the environment variable `MXNET_BACKWARD_DO_MIRROR` to 1. It reduces the memory consumption by trading off speed. For example, with batch size 64, inception-v3 uses 10G memory and trains 30 image/sec on a single K80 GPU. When mirroring is enabled, with 10G GPU memory consumption, we can run inception-v3 using batch size of 128. The cost is that, the speed reduces to 27 images/sec.
+
+<!-- INSERT SOURCE DOWNLOAD BUTTONS -->

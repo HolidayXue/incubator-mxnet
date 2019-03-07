@@ -38,6 +38,7 @@ function(detect_cuDNN)
 
   find_library(CUDNN_LIBRARY NAMES libcudnn.so cudnn.lib # libcudnn_static.a
                              PATHS ${CUDNN_ROOT} $ENV{CUDNN_ROOT} ${CUDNN_INCLUDE}
+                             PATH_SUFFIXES lib lib/x64
                              DOC "Path to cuDNN library.")
 
   if(CUDNN_INCLUDE AND CUDNN_LIBRARY)
@@ -102,7 +103,7 @@ endfunction()
 
 
 # This list will be used for CUDA_ARCH_NAME = All option
-set(CUDA_KNOWN_GPU_ARCHITECTURES "Fermi" "Kepler" "Maxwell")
+set(CUDA_KNOWN_GPU_ARCHITECTURES "Kepler" "Maxwell")
 
 # This list will be used for CUDA_ARCH_NAME = Common option (enabled by default)
 set(CUDA_COMMON_GPU_ARCHITECTURES "3.0" "3.5" "5.0")
@@ -119,6 +120,16 @@ else()
   list(APPEND CUDA_COMMON_GPU_ARCHITECTURES "5.2+PTX")
 endif ()
 
+if (CUDA_TOOLSET VERSION_GREATER "9.0")
+  list(APPEND CUDA_KNOWN_GPU_ARCHITECTURES "Volta")
+  list(APPEND CUDA_COMMON_GPU_ARCHITECTURES "7.0")
+endif()
+
+if (CUDA_TOOLSET VERSION_GREATER "10.0")
+  list(APPEND CUDA_KNOWN_GPU_ARCHITECTURES "Turing")
+  list(APPEND CUDA_COMMON_GPU_ARCHITECTURES "7.5")
+endif()
+
 ################################################################################################
 # Function for selecting GPU arch flags for nvcc based on CUDA_ARCH_NAME
 # Usage:
@@ -126,7 +137,7 @@ endif ()
 function(mshadow_select_nvcc_arch_flags out_variable)
 
   set(CUDA_ARCH_LIST "Auto" CACHE STRING "Select target NVIDIA GPU achitecture.")
-  set_property( CACHE CUDA_ARCH_LIST PROPERTY STRINGS "" "All" "Common" ${CUDA_KNOWN_GPU_ARCHITECTURES} )
+  set_property( CACHE CUDA_ARCH_LIST PROPERTY STRINGS "" "Auto" "All" "Common" ${CUDA_KNOWN_GPU_ARCHITECTURES} )
   mark_as_advanced(CUDA_ARCH_NAME)
 
 
@@ -184,6 +195,12 @@ function(mshadow_select_nvcc_arch_flags out_variable)
       elseif(${arch_name} STREQUAL "Pascal")
         set(arch_bin 6.0 6.1)
         set(arch_ptx 6.1)
+      elseif(${arch_name} STREQUAL "Volta")
+        set(arch_bin 7.0)
+        set(arch_ptx 7.0)
+      elseif(${arch_name} STREQUAL "Turing")
+        set(arch_bin 7.5)
+        set(arch_ptx 7.5)
       else()
         message(SEND_ERROR "Unknown CUDA Architecture Name ${arch_name} in CUDA_SELECT_NVCC_ARCH_FLAGS")
       endif()

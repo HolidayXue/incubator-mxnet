@@ -23,13 +23,12 @@ from io import BytesIO, StringIO
 import platform
 
 blacklist = [
-    'Windows.h', 'cublas_v2.h', 'cuda/tensor_gpu-inl.cuh',
-    'cuda_runtime.h', 'cudnn.h', 'cudnn_lrn-inl.h', 'curand.h', 'curand_kernel.h',
-    'glog/logging.h', 'io/azure_filesys.h', 'io/hdfs_filesys.h', 'io/s3_filesys.h',
-    'kvstore_dist.h', 'mach/clock.h', 'mach/mach.h',
-    'malloc.h', 'mkl.h', 'mkl_cblas.h', 'mkl_vsl.h', 'mkl_vsl_functions.h',
-    'nvml.h', 'opencv2/opencv.hpp', 'sys/stat.h', 'sys/types.h', 'cuda.h', 'cuda_fp16.h',
-    'omp.h', 'execinfo.h', 'packet/sse-inl.h', 'emmintrin.h', 'thrust/device_vector.h',
+    'Windows.h', 'cublas_v2.h', 'cuda/tensor_gpu-inl.cuh', 'cuda_runtime.h', 'cudnn.h',
+    'cudnn_lrn-inl.h', 'curand.h', 'curand_kernel.h', 'glog/logging.h', 'io/azure_filesys.h',
+    'io/hdfs_filesys.h', 'io/s3_filesys.h', 'kvstore_dist.h', 'mach/clock.h', 'mach/mach.h',
+    'malloc.h', 'mkl.h', 'mkl_cblas.h', 'mkl_vsl.h', 'mkl_vsl_functions.h', 'NvInfer.h', 'nvml.h',
+    'opencv2/opencv.hpp', 'sys/stat.h', 'sys/types.h', 'cuda.h', 'cuda_fp16.h', 'omp.h',
+    'onnx/onnx.pb.h', 'execinfo.h', 'packet/sse-inl.h', 'emmintrin.h', 'thrust/device_vector.h',
     'cusolverDn.h', 'internal/concurrentqueue_internal_debug.h', 'relacy/relacy_std.hpp',
     'relacy_shims.h', 'ittnotify.h', 'shared_mutex'
     ]
@@ -85,7 +84,11 @@ def find_source(name, start, stage):
     if not candidates: return ''
     if len(candidates) == 1: return candidates[0]
     for x in candidates:
-        if x.split('/')[1] == start.split('/')[1]: return x
+        if '3rdparty' in x:
+            # make sure to compare the directory name after 3rdparty
+            if x.split('/')[2] == start.split('/')[2]: return x
+        else:
+            if x.split('/')[1] == start.split('/')[1]: return x
     return ''
 
 
@@ -98,6 +101,18 @@ out = BytesIO()
 
 
 def expand(x, pending, stage):
+    """
+    Expand the pending files in the current stage.
+
+    Parameters
+    ----------
+    x: str
+         The file to expand.
+    pending : str
+         The list of pending files to expand.
+    stage: str
+         The current stage for file expansion, used for matching the prefix of files.
+    """
     if x in history and x not in ['mshadow/mshadow/expr_scalar-inl.h']: # MULTIPLE includes
         return
 
@@ -126,13 +141,20 @@ def expand(x, pending, stage):
             if not m:
                 print(uline + ' not found')
                 continue
-            h = m.groups()[0].strip('./')
-            source = find_source(h, x, stage)
+            path = m.groups()[0]
+            h = path.strip('./') if "../3rdparty/" not in path else path
+            if h.endswith('complex.h') and x.endswith('openblas_config.h'):
+                source = ''
+            elif h.startswith('ps/'):
+                source = '../3rdparty/ps-lite/include/' + h
+            else:
+                source = find_source(h, x, stage)
             if not source:
                 if (h not in blacklist and
                     h not in sysheaders and
                     'mkl' not in h and
                     'nnpack' not in h and
+                    'tensorrt' not in h and
                     not h.endswith('.cuh')): sysheaders.append(h)
             else:
                 expand.treeDepth += 1
@@ -149,8 +171,8 @@ expand.treeDepth = 0
 expand.fileCount = 0
 
 # Expand the stages
-expand(sys.argv[2], [], "dmlc")
-expand(sys.argv[3], [], "nnvm")
+expand(sys.argv[2], [], "3rdparty/dmlc-core")
+expand(sys.argv[3], [], "3rdparty/tvm/nnvm")
 expand(sys.argv[4], [], "src")
 
 # Write to amalgamation file
@@ -194,5 +216,3 @@ with open(sys.argv[5], 'wb') as f:
 for src in sources:
     if src not in history and not src.endswith('.o'):
         print('Not processed:', src)
-
-

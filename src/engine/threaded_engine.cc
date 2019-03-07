@@ -130,6 +130,9 @@ inline bool ThreadedVar::CompleteWriteDependency(Dispatcher dispatcher) {
     assert(pending_write_ != nullptr);
     CHECK_EQ(num_pending_reads_, kWriteTriggered);
 
+    // increment version number
+    ++version_;
+
     // really delete
     if (to_delete_) {
       VersionedVarBlock *head = pending_write_->next;
@@ -164,7 +167,7 @@ inline bool ThreadedVar::CompleteWriteDependency(Dispatcher dispatcher) {
   }
   // This is outside of lock scope
   // Be very carful, pending_write_ and num_pending_reads_
-  // can change now, do not reply ont the two variables.
+  // can change now, do not rely on these two variables.
   // The linked list \in [old_pending_write, end_of_read_chain)
   // is already detached from this Var.
   // So it is safe to modify these
@@ -194,6 +197,11 @@ inline void ThreadedVar::SetToDelete() {
 inline bool ThreadedVar::ready_to_read() {
   std::lock_guard<std::mutex> lock{mutex_};
   return this->is_ready_to_read();
+}
+
+inline size_t ThreadedVar::version() {
+  std::lock_guard<std::mutex> lock{mutex_};
+  return this->version_;
 }
 
 // implementation of threaded engine
@@ -273,11 +281,13 @@ void ThreadedEngine::DeleteOperator(OprHandle op) {
   this->PushAsync([threaded_opr](RunContext, CallbackOnComplete on_complete) {
       ThreadedOpr::Delete(threaded_opr);
       on_complete();
-    }, Context::CPU(), {}, deps, FnProperty::kAsync, 0,
-    PROFILER_MESSAGE("DeleteOperator"));
+    }, Context::CPU(), {}, deps, FnProperty::kDeleteVar, 0,
+    "DeleteOperator");
 }
 
 void ThreadedEngine::Push(OprHandle op, Context exec_ctx, int priority, bool profiling) {
+  BulkFlush();
+
   ThreadedOpr* threaded_opr = ThreadedOpr::CastFromBase(op);
   OprBlock* opr_block = OprBlock::New();
   opr_block->opr = threaded_opr;
@@ -309,14 +319,23 @@ void ThreadedEngine::PushAsync(AsyncFn fn, Context exec_ctx,
                                int priority,
                                const char* opr_name,
                                bool wait) {
-  BulkFlush();
+#if MXNET_USE_CUDA
+  if (exec_ctx.dev_mask() == gpu::kDevMask) {
+    if (device_count_ < 0) {
+      int tmp = -1;
+      cudaGetDeviceCount(&tmp);
+      device_count_ = tmp;
+      CHECK_GT(device_count_, 0) << "GPU usage requires at least 1 GPU";
+    }
+    CHECK_LT(exec_ctx.dev_id, device_count_)
+        << "Invalid GPU Id: " << exec_ctx.dev_id
+        << ", Valid device id should be less than device_count: "
+        << device_count_;
+  }
+#endif
   ThreadedOpr *opr = NewOperator(std::move(fn), const_vars, mutable_vars, prop, opr_name, wait);
   opr->temporary = true;
-#if MXNET_USE_PROFILER
   const bool profiling = profiler_->IsProfiling(profiler::Profiler::kImperative);
-#else
-  const bool profiling = false;
-#endif
   Push(opr, exec_ctx, priority, profiling);
 }
 
@@ -326,8 +345,7 @@ void ThreadedEngine::PushSync(SyncFn exec_fn, Context exec_ctx,
                               FnProperty prop,
                               int priority,
                               const char* opr_name) {
-  BulkStatus& bulk_status = *BulkStatusStore::Get();
-  if (!bulk_status.bulk_size || prop != FnProperty::kNormal || priority) {
+  if (!bulk_size() || prop != FnProperty::kNormal || priority) {
     this->PushAsync([exec_fn](RunContext ctx, CallbackOnComplete on_complete) {
         exec_fn(ctx);
         on_complete();
@@ -335,9 +353,9 @@ void ThreadedEngine::PushSync(SyncFn exec_fn, Context exec_ctx,
     return;
   }
 
+  const BulkStatus& bulk_status = *BulkStatusStore::Get();
   if (bulk_status.count && exec_ctx != bulk_status.ctx) BulkFlush();
   BulkAppend(exec_fn, exec_ctx, const_vars, mutable_vars);
-  return;
 }
 
 void ThreadedEngine::DeleteVariable(SyncFn delete_fn,
@@ -351,7 +369,7 @@ void ThreadedEngine::DeleteVariable(SyncFn delete_fn,
       delete_fn(ctx);
       on_complete();
     }, exec_ctx, {}, {var}, FnProperty::kDeleteVar, 0,
-    PROFILER_MESSAGE("DeleteVariable"));
+    "DeleteVariable");
 }
 
 void ThreadedEngine::WaitForVar(VarHandle var) {
@@ -380,7 +398,7 @@ void ThreadedEngine::WaitForVar(VarHandle var) {
       }
       on_complete();
     }, Context::CPU(), {var}, {}, FnProperty::kNormal, 0,
-    PROFILER_MESSAGE("WaitForVar"), true);
+    "WaitForVar", true);
   {
     std::unique_lock<std::mutex> lock{finished_m_};
     finished_cv_.wait(lock, [this, &done]() {
@@ -460,16 +478,18 @@ inline void ThreadedEngine::ThrowException(ThreadedVar* threaded_var) {
   return;
 }
 
-void ThreadedEngine::OnCompleteStatic(
-    Engine *engine, void *opr_block_) {
+void ThreadedEngine::OnCompleteStatic(Engine *engine, void *opr_block_,
+                                      const dmlc::Error* error) {
   OprBlock *opr_block = static_cast<OprBlock*>(opr_block_);
   ThreadedOpr *threaded_opr = opr_block->opr;
-#if MXNET_USE_PROFILER
+  if (error != nullptr) {
+    auto ex_p = std::make_exception_ptr(*error);
+    threaded_opr->opr_exception = std::make_shared<std::exception_ptr>(ex_p);
+  }
   if (opr_block->profiling && threaded_opr->opr_name) {
     // record operator end timestamp
     opr_block->opr_profile->stop();
   }
-#endif
   static_cast<ThreadedEngine*>(engine)->OnComplete(threaded_opr);
   OprBlock::Delete(opr_block);
 }

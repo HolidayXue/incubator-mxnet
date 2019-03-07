@@ -19,6 +19,7 @@
 #include <unordered_set>
 #include <iostream>
 #include "./imperative_utils.h"
+#include "./cached_op.h"
 
 namespace mxnet {
 #if DMLC_CXX11_THREAD_LOCAL
@@ -105,8 +106,16 @@ OpStatePtr Imperative::Invoke(
   SetShapeType(ctx, attrs, inputs, outputs, &dispatch_mode);
   std::vector<OpReqType> req;
   SetWriteInplaceReq(inputs, outputs, &req);
-
-  return InvokeOp(ctx, attrs, inputs, outputs, req, dispatch_mode);
+  OpStatePtr ret = InvokeOp(ctx, attrs, inputs, outputs, req, dispatch_mode);
+  // the followinng loop is used for finding out the correct shape when some shapes are dynamic
+  for (size_t i = 0; i < outputs.size(); i++) {
+    if (outputs[i]->shape().ndim() == 0) {
+      // the WaitToRead overhead here does not seem to be avoidable
+      outputs[i]->WaitToRead();
+      outputs[i]->SetShapeFromChunk();
+    }
+  }
+  return ret;
 }
 
 void Imperative::MarkVariables(
@@ -188,12 +197,13 @@ void Imperative::RecordOp(
     std::vector<bool>* p_save_outputs) {
   MXAPIThreadLocalEntry *local_buff = MXAPIThreadLocalStore::Get();
 
-  for (uint32_t i = 0; i < outputs.size(); ++i) {
-    CHECK(AGInfo::IsNone(*(outputs[i])))
+  for (auto output : outputs) {
+    CHECK(AGInfo::IsNone(*output))
       << "Assigning to NDArrays that are already in a computational graph "
       << "will cause undefined behavior when evaluating gradients. "
       << "Please call backward first to clear the graph or do this out side of "
-      << "a record section. ";
+      << "a record section. Also note that you cannot use inplace operations "
+      << "like +=, *=, relu(x, out=x), y[idx]=x, etc inside a record section.";
   }
 
   bool need_grad = false;
@@ -245,8 +255,8 @@ void Imperative::RecordOp(
     node->inputs[i] = inputs[i]->entry_;
   }
 
-  for (uint32_t i = 0; i < outputs.size(); ++i) {
-    CHECK(AGInfo::IsNone(*(outputs[i])))
+  for (auto output : outputs) {
+    CHECK(AGInfo::IsNone(*output))
       << "Inplace operations (+=, -=, x[:]=, etc) are not supported when "
       << "recording with autograd.";
   }
@@ -264,95 +274,6 @@ void Imperative::RecordOp(
     outputs[i]->entry_ = nnvm::NodeEntry{node, i, 0};
   }
 }
-
-void Imperative::RunGraph(
-    const bool retain_graph,
-    const nnvm::IndexedGraph& idx,
-    const std::vector<NDArray*> arrays,
-    size_t node_start, size_t node_end,
-    std::vector<OpReqType>&& array_reqs,
-    std::vector<uint32_t>&& ref_count,
-    std::vector<OpStatePtr> *p_states,
-    const DispatchModeVector &dispatch_modes) {
-  using namespace nnvm;
-  using namespace imperative;
-  static auto& createop = nnvm::Op::GetAttr<FCreateOpState>("FCreateOpState");
-  static auto& is_layer_backward = Op::GetAttr<bool>("TIsLayerOpBackward");
-  static const auto bwd_cached_op = Op::Get("_backward_CachedOp");
-
-  std::vector<OpStatePtr>& states = *p_states;
-  bool recording = is_recording();
-
-  std::vector<NDArray*> ndinputs, ndoutputs;
-  ShapeVector arg_shapes;
-  DTypeVector arg_dtypes;
-  std::vector<OpReqType> req;
-
-  for (size_t i = node_start; i < node_end; ++i) {
-    const nnvm::IndexedGraph::Node& node = idx[i];
-    if (node.source->op() == nullptr) continue;
-    auto num_outputs = node.source->num_outputs();
-    ndinputs.clear();
-    ndinputs.reserve(node.inputs.size());
-    for (const auto& j : node.inputs) {
-      ndinputs.emplace_back(arrays[idx.entry_id(j)]);
-      CHECK(!ndinputs.back()->is_none()) << idx[j.node_id].source->attrs.name << " " << j.index;
-    }
-    ndoutputs.clear();
-    ndoutputs.reserve(num_outputs);
-    req.clear();
-    req.reserve(num_outputs);
-    for (size_t j = 0; j < num_outputs; ++j) {
-      size_t eid = idx.entry_id(i, j);
-      ndoutputs.emplace_back(arrays[eid]);
-      req.push_back(array_reqs[eid]);
-      CHECK(!ndoutputs.back()->is_none());
-    }
-    const Context& ctx = ndoutputs[0]->ctx();
-    const DispatchMode dispatch_mode = dispatch_modes[i];
-    if (node.source->op() == bwd_cached_op) {
-      const auto& cached_op = dmlc::get<CachedOpPtr>(node.source->attrs.parsed);
-      nnvm::Node* fwd_node = node.source->control_deps[0].get();
-      auto fwd_node_id = idx.node_id(fwd_node);
-      cached_op->Backward(retain_graph, states[fwd_node_id], ndinputs, req, ndoutputs);
-    } else if (createop.count(node.source->op())) {
-      arg_shapes.clear();
-      arg_dtypes.clear();
-      arg_shapes.reserve(ndinputs.size());
-      arg_dtypes.reserve(ndinputs.size());
-      for (size_t i = 0; i < ndinputs.size(); ++i) {
-        arg_shapes.emplace_back(ndinputs[i]->shape());
-        arg_dtypes.emplace_back(ndinputs[i]->dtype());
-      }
-      states[i] = createop[node.source->op()](
-          node.source->attrs, ctx, arg_shapes, arg_dtypes);
-      InvokeOp(ctx, node.source->attrs, ndinputs, ndoutputs, req, dispatch_mode, states[i]);
-      if (recording) RecordOp(NodeAttrs(node.source->attrs), ndinputs, ndoutputs, states[i]);
-    } else if (is_layer_backward.get(node.source->op(), false)) {
-      nnvm::Node* fwd_node = node.source->control_deps[0].get();
-      auto fwd_node_id = idx.node_id(fwd_node);
-      InvokeOp(ctx, node.source->attrs, ndinputs, ndoutputs,
-               req, dispatch_mode, states[fwd_node_id]);
-      if (recording) {
-        RecordOp(NodeAttrs(node.source->attrs), ndinputs, ndoutputs, states[fwd_node_id]);
-      }
-    } else {
-      InvokeOp(ctx, node.source->attrs, ndinputs, ndoutputs, req, dispatch_mode);
-      if (recording) RecordOp(NodeAttrs(node.source->attrs), ndinputs, ndoutputs);
-    }
-
-    for (const auto& j : node.inputs) {
-      size_t eid = idx.entry_id(j);
-      --ref_count[eid];
-      if (ref_count[eid] == 0) arrays[eid]->ptr_.reset();
-    }
-    for (size_t j = 0; j < ndoutputs.size(); ++j) {
-      size_t eid = idx.entry_id(i, j);
-      if (ref_count[eid] == 0) arrays[eid]->ptr_.reset();
-    }
-  }
-}
-
 
 std::vector<NDArray*> Imperative::Backward(
     const std::vector<NDArray*>& outputs,
@@ -430,12 +351,12 @@ std::vector<NDArray*> Imperative::Backward(
         << "There are no inputs in computation graph that require gradients.";
   }
 
-  Graph g_graph = pass::Gradient(
+  Graph g_graph = pass::MXGradient(
       graph, graph.outputs, xs, ograd_entries,
       exec::AggregateGradient, nullptr, nullptr,
       zero_ops, "_copy");
   CHECK_EQ(g_graph.outputs.size(), xs.size());
-  for (const auto &e : g_graph.outputs) {
+  for (const auto& e : g_graph.outputs) {
     if (e.node->op() == nullptr) {
       auto node = Node::Create();
       node->attrs.op = copy_op;
@@ -462,7 +383,9 @@ std::vector<NDArray*> Imperative::Backward(
   std::vector<OpStatePtr> states;
   std::vector<NDArray*> arrays;
   arrays.reserve(buff.size());
-  for (size_t i = 0; i < buff.size(); ++i) arrays.push_back(&buff[i]);
+  for (auto& buffered_array : buff) {
+    arrays.push_back(&buffered_array);
+  }
   if (create_graph) {
     states.resize(num_forward_nodes);
     nnvm::DFSVisit(sym.outputs, [&](const nnvm::NodePtr& n) {
@@ -477,12 +400,12 @@ std::vector<NDArray*> Imperative::Backward(
         ref_count[eid] = 1;
       }
     });
-    for (size_t i = 0; i < ograd_entries.size(); ++i) {
-      AGInfo& info = AGInfo::Get(ograd_entries[i].node);
-      if (!idx.exist(ograd_entries[i].node.get())) continue;
-      size_t eid = idx.entry_id(ograd_entries[i]);
+    for (auto& ograd_entry : ograd_entries) {
+      AGInfo& info = AGInfo::Get(ograd_entry.node);
+      if (!idx.exist(ograd_entry.node.get())) continue;
+      size_t eid = idx.entry_id(ograd_entry);
       buff[eid] = info.outputs[0];
-      buff[eid].entry_ = ograd_entries[i];
+      buff[eid].entry_ = ograd_entry;
     }
   } else {
     states.reserve(num_forward_nodes);
@@ -496,10 +419,10 @@ std::vector<NDArray*> Imperative::Backward(
         if (retain_graph || info.grad_req != kNullOp) ref_count[eid] = 1;
       }
     }
-    for (size_t i = 0; i < ograd_entries.size(); ++i) {
-      if (!idx.exist(ograd_entries[i].node.get())) continue;
-      AGInfo& info = AGInfo::Get(ograd_entries[i].node);
-      arrays[idx.entry_id(ograd_entries[i])] = &info.outputs[0];
+    for (auto& ograd_entry : ograd_entries) {
+      if (!idx.exist(ograd_entry.node.get())) continue;
+      AGInfo& info = AGInfo::Get(ograd_entry.node);
+      arrays[idx.entry_id(ograd_entry)] = &info.outputs[0];
     }
   }
   for (size_t i = num_forward_outputs; i < graph.outputs.size(); ++i) {
@@ -519,9 +442,10 @@ std::vector<NDArray*> Imperative::Backward(
 
     ShapeVector shapes;
     shapes.reserve(idx.num_node_entries());
+    bool contain_unknown = false;
     for (const auto& i : arrays) shapes.emplace_back(i->shape());
     CheckAndInferShape(&graph, std::move(shapes), false,
-                       node_range, entry_range);
+                       node_range, entry_range, &contain_unknown);
 
     DTypeVector dtypes;
     dtypes.reserve(idx.num_node_entries());
@@ -556,7 +480,7 @@ std::vector<NDArray*> Imperative::Backward(
     array_reqs[eid] = x_reqs[i - num_forward_outputs];
   }
 
-  const auto& shapes = graph.GetAttr<ShapeVector>("shape");
+  const auto& shapes = graph.GetAttr<mxnet::ShapeVector>("shape");
   const auto& dtypes = graph.GetAttr<DTypeVector>("dtype");
   const auto& stypes = graph.GetAttr<StorageTypeVector>("storage_type");
   const auto& dispatch_modes = graph.GetAttr<DispatchModeVector>("dispatch_mode");
@@ -581,8 +505,16 @@ std::vector<NDArray*> Imperative::Backward(
   bool prev_training = set_is_training(is_train);
   int prev_bulk_size = Engine::Get()->set_bulk_size(backward_bulk_size_);
 
-  RunGraph(retain_graph, idx, arrays, num_forward_nodes, idx.num_nodes(),
-           std::move(array_reqs), std::move(ref_count), &states, dispatch_modes);
+  try {
+    RunGraph(retain_graph, idx, arrays, num_forward_nodes, idx.num_nodes(),
+            std::move(array_reqs), std::move(ref_count), &states, dispatch_modes,
+            is_recording());
+  } catch (const dmlc::Error& e) {
+    Engine::Get()->set_bulk_size(prev_bulk_size);
+    set_is_recording(prev_recording);
+    set_is_training(prev_training);
+    throw e;
+  }
 
   Engine::Get()->set_bulk_size(prev_bulk_size);
   set_is_recording(prev_recording);

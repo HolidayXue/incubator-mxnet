@@ -35,7 +35,7 @@
     [](const NodeAttrs& attrs) {                                                       \
       return std::vector<std::string>{"data", "label"};                                \
     })                                                                                 \
-  .set_attr<nnvm::FInferShape>("FInferShape", RegressionOpShape)                       \
+  .set_attr<mxnet::FInferShape>("FInferShape", RegressionOpShape)                       \
   .set_attr<nnvm::FGradient>("FGradient", RegressionOpGrad{__bwdop$})                  \
   .set_attr<nnvm::FInferType>("FInferType", ElemwiseType<2, 1>)                        \
   .set_attr<nnvm::FInplaceOption>("FInplaceOption",                                    \
@@ -131,7 +131,7 @@ The logistic function, also known as the sigmoid function, is computed as
 :math:`\frac{1}{1+exp(-\textbf{x})}`.
 
 Commonly, the sigmoid is used to squash the real-valued output of a linear model
-:math:wTx+b into the [0,1] range so that it can be interpreted as a probability.
+:math:`wTx+b` into the [0,1] range so that it can be interpreted as a probability.
 It is suitable for binary classification or probability prediction tasks.
 
 .. note::
@@ -142,7 +142,11 @@ The storage type of ``label`` can be ``default`` or ``csr``
 - LogisticRegressionOutput(default, default) = default
 - LogisticRegressionOutput(default, csr) = default
 
-By default, gradients of this loss function are scaled by factor `1/m`, where m is the number of regression outputs of a training example.
+The loss function used is the Binary Cross Entropy Loss:
+
+:math:`-{(y\log(p) + (1 - y)\log(1 - p))}`
+
+Where `y` is the ground truth probability of positive outcome for a given example, and `p` the probability predicted by the model. By default, gradients of this loss function are scaled by factor `1/m`, where m is the number of regression outputs of a training example.
 The parameter `grad_scale` can be used to change this scale to `grad_scale/m`.
 
 )code" ADD_FILELINE);

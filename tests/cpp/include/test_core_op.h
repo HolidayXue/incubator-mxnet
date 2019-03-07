@@ -104,7 +104,7 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
    * \param ctx Context to use when creating the array/tensor
    * \return The created NDArray
    */
-  NDArray CreateRandArray(const TShape& shape, const RunContext& run_ctx, int dtype) const {
+  NDArray CreateRandArray(const mxnet::TShape& shape, const RunContext& run_ctx, int dtype) const {
     CHECK_GT(shape.Size(), 0);  // Check it's a valid shape
     NDArray array(shape, run_ctx.ctx, true, dtype);
     array.CheckAndAlloc();
@@ -118,7 +118,7 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
    * \param ctx Context to use when creating the array/tensor
    * \return The created NDArray
    */
-  NDArray CreateZeroArray(const TShape& shape, const RunContext& run_ctx, int dtype) const {
+  NDArray CreateZeroArray(const mxnet::TShape& shape, const RunContext& run_ctx, int dtype) const {
     CHECK_GT(shape.Size(), 0);  // Check it's a valid shape
     NDArray array(shape, run_ctx.ctx, true, dtype);
     array.CheckAndAlloc();
@@ -141,8 +141,9 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
     static auto gradient = nnvm::Op::GetAttr<nnvm::FGradient>("FGradient");
     nnvm::FGradient grad_fun = gradient.get(op_, nullptr);
     if (grad_fun) {
-      std::vector<nnvm::NodeEntry> out_grads;
-      std::vector<nnvm::NodeEntry> entries = grad_fun(MakeNode(), out_grads);
+      auto n = MakeNode();
+      std::vector<nnvm::NodeEntry> out_grads(n->num_outputs());
+      std::vector<nnvm::NodeEntry> entries = grad_fun(n, out_grads);
       CHECK_GE(entries.size(), 1U);
       res.reserve(entries.size());
       for (const nnvm::NodeEntry& node_entry : entries) {
@@ -167,26 +168,50 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
    * \param op Pointer to nnvm Operator object
    */
   void AttachResources(OpContext *ctx, const nnvm::NodeAttrs& attrs, const nnvm::Op *op) {
+    std::vector<ResourceRequest> reqs;
+    std::vector<Resource>& requested = ctx->requested;
     static auto& fresource = nnvm::Op::GetAttr<FResourceRequest>("FResourceRequest");
     if (fresource.count(op) != 0) {
-      std::vector<Resource>& requested = ctx->requested;
-      auto reqs = fresource[op](attrs);
+      reqs = fresource[op](attrs);
+    } else {
+      static auto& fresourceex = nnvm::Op::GetAttr<FResourceRequestEx>("FResourceRequestEx");
+      if (fresourceex.count(op) != 0) {
+        if (this->function_ || this->stateful_function_) {
+          reqs = fresourceex[op](attrs, ctx->run_ctx.ctx.dev_mask(), DispatchMode::kFCompute);
+        } else {
+          reqs = fresourceex[op](attrs, ctx->run_ctx.ctx.dev_mask(), DispatchMode::kFComputeEx);
+        }
+      }
+    }
+    if (!reqs.empty()) {
       // Get the resource of temporal space.
       for (const ResourceRequest& req : reqs) {
-        if (req.type == ResourceRequest::kTempSpace) {
-          Resource r = ResourceManager::Get()->Request(ctx->run_ctx.ctx, req);
-          requested.emplace_back(r);
-        } else if (req.type == ResourceRequest::kRandom) {
-          requested.emplace_back(ResourceManager::Get()->Request(ctx->run_ctx.ctx, req));
-        } else if (req.type == ResourceRequest::kParallelRandom) {
-          Resource rm = ResourceManager::Get()->Request(ctx->run_ctx.ctx, req);
-          if (ctx->run_ctx.ctx.dev_mask() == Context::kCPU) {
-            common::random::RandGenerator<cpu, DType>::AllocState(
-                rm.get_parallel_random<cpu, DType>());
+        switch (req.type) {
+          case ResourceRequest::kTempSpace: {
+            requested.emplace_back(ResourceManager::Get()->Request(ctx->run_ctx.ctx, req));
+            break;
           }
-          requested.emplace_back(rm);
-        } else {
-          LOG(FATAL) << "resource type not yet supported";
+          case ResourceRequest::kRandom: {
+            requested.emplace_back(ResourceManager::Get()->Request(ctx->run_ctx.ctx, req));
+            break;
+          }
+          case ResourceRequest::kParallelRandom: {
+            Resource rm = ResourceManager::Get()->Request(ctx->run_ctx.ctx, req);
+            if (ctx->run_ctx.ctx.dev_mask() == Context::kCPU) {
+              common::random::RandGenerator<cpu, DType>::AllocState(
+                  rm.get_parallel_random<cpu, DType>());
+            }
+            requested.emplace_back(rm);
+            break;
+          }
+#if MXNET_USE_CUDNN == 1 && CUDNN_MAJOR >= 7
+          case ResourceRequest::kCuDNNDropoutDesc: {
+            requested.emplace_back(ResourceManager::Get()->Request(ctx->run_ctx.ctx, req));
+            break;
+          }
+#endif  // MXNET_USE_CUDNN == 1 && CUDNN_MAJOR >= 7
+          default:
+            LOG(FATAL) << "resource type " << req.type << " is not yet supported";
         }
       }
     }
@@ -241,7 +266,7 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
    * \param isGPU Is this going to be on the GPU?
    * \param shapes Array of input shapes
    */
-  CoreOpExecutor(const bool isGPU, const std::vector<TShape>& shapes)
+  CoreOpExecutor(const bool isGPU, const mxnet::ShapeVector& shapes)
     : input_shapes_(shapes)
       , op_(nullptr)  {
     ctx_.is_train = true;
@@ -372,7 +397,7 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
 
       // Generic, all shapes the same. Probably this will need to be adjusted for more complex
       // operators such as dot
-      std::vector<nnvm::TShape> input_shapes;
+      std::vector<mxnet::TShape> input_shapes;
       if (!input_shapes_.empty()) {
         for (size_t i = 0, n = num_inputs; i < n; ++i) {
           input_shapes.emplace_back(i < input_shapes_.size() ? input_shapes_[i]
@@ -409,7 +434,7 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
           if (bwd_node_ptr) {
             CHECK_EQ(bwd_node_ptr->inputs.size(), num_inputs);
             input_types.resize(bwd_node_ptr->inputs.size(), -1);
-            for (size_t i = 0; i < num_inputs; ++i) {
+            for (int i = 0; i < num_inputs; ++i) {
               const int map_key = bwd_node_ptr->inputs[i].index;
               CHECK(index2array.find(map_key) != index2array.end());
               const int dtype = index2array[map_key]->dtype();
@@ -420,7 +445,7 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
               output_types.emplace_back(dtype);
             }
           } else {
-            for (size_t x = 0; x < num_inputs; ++x) {
+            for (int x = 0; x < num_inputs; ++x) {
               input_types.emplace_back(default_dtype());
             }
             for (const auto &fwd_inp : backward_for_op->inputs()) {
@@ -430,10 +455,10 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
           }
         } else {
           CHECK(false);  // above always true?
-          for (size_t x = 0; x < num_inputs; ++x) {
+          for (int x = 0; x < num_inputs; ++x) {
             input_types.emplace_back(default_dtype());
           }
-          for (size_t x = 0; x < inferred_num_outputs; ++x) {
+          for (int x = 0; x < inferred_num_outputs; ++x) {
             output_types.emplace_back(default_dtype());
           }
         }
@@ -441,10 +466,10 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
 
       // Output arrays
       if (outputs_.empty()) {
-        std::vector<nnvm::TShape> output_shapes;
-        static auto& finfer_shape = Op::GetAttr<nnvm::FInferShape>("FInferShape");
+        std::vector<mxnet::TShape> output_shapes;
+        static auto& finfer_shape = Op::GetAttr<mxnet::FInferShape>("FInferShape");
         if (finfer_shape.count(op_)) {
-          nnvm::FInferShape call_infer_shapes = finfer_shape[op_];
+          mxnet::FInferShape call_infer_shapes = finfer_shape[op_];
           output_shapes.resize(inferred_num_outputs);
           call_infer_shapes(attrs_, &input_shapes, &output_shapes);
           input_shapes_ = input_shapes;
@@ -454,12 +479,12 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
             if (bwd_node_ptr) {
               input_shapes.clear();
               CHECK_EQ(bwd_node_ptr->inputs.size(), num_inputs);
-              for (size_t i = 0; i < num_inputs; ++i) {
+              for (int i = 0; i < num_inputs; ++i) {
                 const int map_key = bwd_node_ptr->inputs[i].index;
                 CHECK(index2array.find(map_key) != index2array.end());
-                const nnvm::TShape &shp = index2array[map_key]->shape();
+                const mxnet::TShape &shp = index2array[map_key]->shape();
                 input_shapes.push_back(shp);
-                const nnvm::TShape ss = input_shapes[i];
+                const mxnet::TShape ss = input_shapes[i];
               }
             } else {
               // TODO(cjolivier)
@@ -467,7 +492,7 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
             input_shapes_ = input_shapes;
             // BWD Output shapes
             output_shapes = backward_for_op->input_shapes_;
-            CHECK_EQ(output_shapes.size(), inferred_num_outputs);
+            output_shapes.resize(inferred_num_outputs);
           } else {
             output_shapes = input_shapes;
             output_shapes.resize(inferred_num_outputs);
@@ -510,8 +535,24 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
 
       function_ = common::GetFCompute<FCompute>(op_, "FCompute", ctx_.run_ctx.ctx);
       functionex_ = common::GetFCompute<FComputeEx>(op_, "FComputeEx", ctx_.run_ctx.ctx);
+      stateful_function_ = common::GetFCompute<FStatefulCompute>(op_, "FStatefulCompute",
+                                                                 ctx_.run_ctx.ctx);
 
       AttachResources(&ctx_, attrs_, op_);
+
+      auto& is_layer_backward = Op::GetAttr<bool>("TIsLayerOpBackward");
+      auto& createop = nnvm::Op::GetAttr<FCreateOpState>("FCreateOpState");
+      if (createop.count(op_) || is_layer_backward.get(op_, false)) {
+        if (backward_for_op) {
+          state_ = backward_for_op->state_;
+        }
+        if (!state_) {
+          if (!create_state_) {
+            create_state_ = createop[op_];
+          }
+          state_ = create_state_(attrs_, ctx_.run_ctx.ctx, input_shapes_, input_types);
+        }
+      }
 
       if (!backward_for_op) {
         bool no_backward = false;
@@ -560,8 +601,14 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
   inline void forward(const size_t count) {
     perf::TimingItem timeF(&OperatorExecutorTiming::GetTiming(), kForward, "Forward", count);
     mxnet::profiler::vtune::VTuneResume profile;
-    for (size_t i = 0; i < count; ++i) {
-      Execute();
+    if (stateful_function_) {
+      for (size_t i = 0; i < count; ++i) {
+        ExecuteStateful();
+      }
+    } else {
+      for (size_t i = 0; i < count; ++i) {
+        Execute();
+      }
     }
   }
 
@@ -569,8 +616,14 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
     CHECK(HasBackward());
     perf::TimingItem timeF(&OperatorExecutorTiming::GetTiming(), kBackward, "Backward", count);
     mxnet::profiler::vtune::VTuneResume profile;
-    for (size_t i = 0; i < count; ++i) {
-      ExecuteBackward();
+    if (stateful_function_) {
+      for (size_t i = 0; i < count; ++i) {
+        ExecuteBackwardStateful();
+      }
+    } else {
+      for (size_t i = 0; i < count; ++i) {
+        ExecuteBackward();
+      }
     }
   }
 
@@ -592,6 +645,17 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
     CHECK_EQ(initialized_, true);
     CHECK_NOTNULL(functionex_);
     functionex_(attrs_, ctx_, inputs_, req_, outputs_);
+  }
+
+  /*!
+   * \brief Execute the stateful operator
+   */
+  void ExecuteStateful() {
+    CHECK_EQ(initialized_, true);
+    CHECK(state_);
+    CollectBlobs(inputs_, &blob_inputs_);
+    CollectBlobs(outputs_, &blob_outputs_);
+    stateful_function_(state_, ctx_, blob_inputs_, req_, blob_outputs_);
   }
 
   bool HasBackward() const {
@@ -624,6 +688,22 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
       // Avoid locked ref count here
       for (std::shared_ptr<CoreOpExecutor> &p : backward_) {
         p->ExecuteEx();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /*!
+   * \brief Execute backward pass on stateful operator
+   */
+  bool ExecuteBackwardStateful() {
+    CHECK_EQ(initialized_, true);
+    CHECK(HasBackward());
+    if (!backward_.empty()) {
+      // Avoid locked ref count here
+      for (std::shared_ptr<CoreOpExecutor> &p : backward_) {
+        p->ExecuteStateful();
       }
       return true;
     }
@@ -708,7 +788,7 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
   /*!
    * \brief Input data shape
    */
-  std::vector<TShape> input_shapes_;
+  mxnet::ShapeVector input_shapes_;
   /*
    * \brief Pointer to the operator object
    */
@@ -737,6 +817,18 @@ class CoreOpExecutor : public test::op::OperatorDataInitializer<DType>
    * \brief Operator's FCompute function (for sparse tensors)
    */
   FComputeEx functionex_;
+  /*!
+   * \brief Operator's FStatefulCompute function
+   */
+  FStatefulCompute stateful_function_;
+  /*!
+   * \brief Operator's FCreateOpState function
+   */
+  FCreateOpState create_state_;
+  /*!
+   * \brief Operator state
+   */
+  OpStatePtr state_;
 
   /*!
    * \brief Backward executors (if any)
@@ -771,7 +863,7 @@ template<typename DType = float>
 inline void BasicRunCoreOpBidirectional(const bool isGPU,
                                         bool verbose,
                                         const kwargs_t& op_kwargs,
-                                        const std::vector<TShape>& shapes,
+                                        const mxnet::ShapeVector& shapes,
                                         const char *op_name,
                                         const char *backward_op_name = "") {
   test::op::CoreOpExecutor<DType> op(isGPU, shapes);

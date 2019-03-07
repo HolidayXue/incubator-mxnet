@@ -28,6 +28,7 @@ from .base import _LIB, c_str_array, c_handle_array, c_array, c_array_buf, c_str
 from .base import check_call, string_types, mx_uint, py_str
 from .base import NDArrayHandle, KVStoreHandle
 from . import optimizer as opt
+from .profiler import set_kvstore_handle
 
 def _ctype_key_value(keys, vals):
     """
@@ -83,6 +84,15 @@ def _updater_wrapper(updater):
         updater(key, lhs, rhs)
     return updater_handle
 
+def _get_kvstore_server_command_type(command):
+    command_types = {'kController': 0,
+                     'kSetMultiPrecision': 1,
+                     'kStopServer': 2,
+                     'kSyncMode': 3,
+                     'kSetGradientCompression': 4,
+                     'kSetProfilerParams': 5}
+    assert (command in command_types), "Unknown command type to send to server"
+    return command_types[command]
 
 class KVStore(object):
     """A key-value store for synchronization of values, over multiple devices."""
@@ -227,7 +237,7 @@ class KVStore(object):
                 self.handle, mx_uint(len(ckeys)), ckeys, cvals, ctypes.c_int(priority)))
 
 
-    def pull(self, key, out=None, priority=0):
+    def pull(self, key, out=None, priority=0, ignore_sparse=True):
         """ Pulls a single value or a sequence of values from the store.
 
         This function returns immediately after adding an operator to the engine.
@@ -239,8 +249,8 @@ class KVStore(object):
 
         The returned values are guaranteed to be the latest values in the store.
 
-        For `RowSparseNDArray` values, this call is ignored,
-        please use ``row_sparse_pull`` instead.
+        pull with `RowSparseNDArray` is not supported for dist kvstore.
+        Please use ``row_sparse_pull`` instead.
 
         Parameters
         ----------
@@ -254,6 +264,9 @@ class KVStore(object):
             The priority of the pull operation.
             Higher priority pull operations are likely to be executed before
             other pull actions.
+
+        ignore_sparse: bool, optional, default True
+            Whether to ignore sparse arrays in the request.
 
         Examples
         --------
@@ -290,11 +303,13 @@ class KVStore(object):
         assert(out is not None)
         ckeys, cvals, use_str_keys = _ctype_key_value(key, out)
         if use_str_keys:
-            check_call(_LIB.MXKVStorePullEx(
-                self.handle, mx_uint(len(ckeys)), ckeys, cvals, ctypes.c_int(priority)))
+            check_call(_LIB.MXKVStorePullWithSparseEx(self.handle, mx_uint(len(ckeys)), ckeys,
+                                                      cvals, ctypes.c_int(priority),
+                                                      ctypes.c_bool(ignore_sparse)))
         else:
-            check_call(_LIB.MXKVStorePull(
-                self.handle, mx_uint(len(ckeys)), ckeys, cvals, ctypes.c_int(priority)))
+            check_call(_LIB.MXKVStorePullWithSparse(self.handle, mx_uint(len(ckeys)), ckeys,
+                                                    cvals, ctypes.c_int(priority),
+                                                    ctypes.c_bool(ignore_sparse)))
 
     def row_sparse_pull(self, key, out=None, priority=0, row_ids=None):
         """ Pulls a single RowSparseNDArray value or a sequence of RowSparseNDArray values \
@@ -424,7 +439,7 @@ class KVStore(object):
             Other keys in this dictionary are optional and specific to the type
             of gradient compression.
         """
-        if ('device' in self.type) or ('dist' in self.type):
+        if ('device' in self.type) or ('dist' in self.type): # pylint: disable=unsupported-membership-test
             ckeys, cvals = _ctype_dict(compression_params)
             check_call(_LIB.MXKVStoreSetGradientCompression(self.handle,
                                                             mx_uint(len(compression_params)),
@@ -466,14 +481,18 @@ class KVStore(object):
         check_call(_LIB.MXKVStoreIsWorkerNode(ctypes.byref(is_worker)))
 
         # pylint: disable=invalid-name
-        if 'dist' in self.type and is_worker.value:
+        if 'dist' in self.type and is_worker.value: # pylint: disable=unsupported-membership-test
             # send the optimizer to server
             try:
                 # use ASCII protocol 0, might be slower, but not a big ideal
                 optim_str = py_str(pickle.dumps(optimizer, 0))
             except:
                 raise
-            self._send_command_to_servers(0, optim_str)
+            cmd = _get_kvstore_server_command_type('kController')
+            self._send_command_to_servers(cmd, optim_str)
+            if optimizer.multi_precision:
+                cmd = _get_kvstore_server_command_type('kSetMultiPrecision')
+                self._send_command_to_servers(cmd, '')
         else:
             self._set_updater(opt.get_updater(optimizer))
 
@@ -653,4 +672,6 @@ def create(name='local'):
     handle = KVStoreHandle()
     check_call(_LIB.MXKVStoreCreate(c_str(name),
                                     ctypes.byref(handle)))
-    return KVStore(handle)
+    kv = KVStore(handle)
+    set_kvstore_handle(kv.handle)
+    return kv

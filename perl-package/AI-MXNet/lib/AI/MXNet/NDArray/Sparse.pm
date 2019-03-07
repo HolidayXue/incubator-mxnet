@@ -80,10 +80,100 @@ use overload '""' => sub {
                         my $shape_info = join('x', @{ $self->shape });
                         sprintf("\n<%s, %s @%s>", $self->_class_name, $shape_info, $self->context);
                      },
+             '+'  => \&add,
+             '-'  => \&subtract,
+             '*'  => \&multiply,
+             '/'  => \&divide,
              '+=' => \&not_implemented,
              '-=' => \&not_implemented,
              '*=' => \&not_implemented,
              '/=' => \&not_implemented;
+
+method add(AI::MXNet::NDArray|Num $other, $reverse=)
+{
+    if(blessed $other and join(',', @{ $self->shape }) eq join(',', @{ $other->shape }))
+    {
+        return AI::MXNet::NDArray::_ufunc_helper(
+            $self,
+            $other,
+            qw/elemwise_add _plus_scalar/
+        );
+    }
+    else
+    {
+        return AI::MXNet::NDArray::_ufunc_helper(
+            $self,
+            $other,
+            qw/broadcast_add _plus_scalar/
+        );
+    }
+}
+
+
+method subtract(AI::MXNet::NDArray|Num $other, $reverse=)
+{
+    if(blessed $other and join(',', @{ $self->shape }) eq join(',', @{ $other->shape }))
+    {
+        return AI::MXNet::NDArray::_ufunc_helper(
+            $self,
+            $other,
+            qw/elemwise_sub _minus_scalar _rminus_scalar/,
+            $reverse
+        );
+    }
+    else
+    {
+        return AI::MXNet::NDArray::_ufunc_helper(
+            $self,
+            $other,
+            qw/broadcast_sub _minus_scalar _rminus_scalar/,
+            $reverse
+        );
+    }
+}
+
+method multiply(AI::MXNet::NDArray|Num $other, $reverse=)
+{
+    if(blessed $other and join(',', @{ $self->shape }) eq join(',', @{ $other->shape }))
+    {
+        return AI::MXNet::NDArray::_ufunc_helper(
+            $self,
+            $other,
+            qw/elemwise_mul _mul_scalar/,
+        );
+    }
+    else
+    {
+        return AI::MXNet::NDArray::_ufunc_helper(
+            $self,
+            $other,
+            qw/broadcast_mul _mul_scalar/,
+        );
+    }
+}
+
+method divide(AI::MXNet::NDArray|Num $other, $reverse=)
+{
+    if(blessed $other and join(',', @{ $self->shape }) eq join(',', @{ $other->shape }))
+    {
+        return AI::MXNet::NDArray::_ufunc_helper(
+            $self,
+            $other,
+            qw/elemwise_div _div_scalar _rdiv_scalar/,
+            $reverse
+        );
+    }
+    else
+    {
+        return AI::MXNet::NDArray::_ufunc_helper(
+            $self,
+            $other,
+            qw/broadcast_div _div_scalar _rdiv_scalar/,
+            $reverse
+        );
+    }
+}
+
 {
     no warnings 'redefine';
     *_sync_copyfrom = *_at = *_slice = *reshape = *size = \&not_implemented;
@@ -266,9 +356,6 @@ extends 'AI::MXNet::NDArray::Sparse';
     csr_matrix: Several ways to construct a CSRNDArray
 =cut
 
-#    def __reduce__(self):
-#        return CSRNDArray, (None,), super(CSRNDArray, self).__getstate__()
-
 use overload '+=' => sub { ($_[0] + $_[1])->copyto($_[0]) },
              '-=' => sub { ($_[0] - $_[1])->copyto($_[0]) },
              '*=' => sub { ($_[0] * $_[1])->copyto($_[0]) },
@@ -276,7 +363,7 @@ use overload '+=' => sub { ($_[0] + $_[1])->copyto($_[0]) },
 
 =head2 slice
 
-        Returns a sliced view of this array.
+        Returns a newly created array based on the indexing key.
 
         Parameters
         ----------

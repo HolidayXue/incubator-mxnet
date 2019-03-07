@@ -31,6 +31,7 @@ from ..initializer import Uniform
 
 from .base_module import BaseModule, _check_input_names
 from .module import Module
+from ..name import NameManager
 
 class BucketingModule(BaseModule):
     """This module helps to deal efficiently with varying-length inputs.
@@ -71,7 +72,7 @@ class BucketingModule(BaseModule):
         self._default_bucket_key = default_bucket_key
         self._sym_gen = sym_gen
 
-        symbol, data_names, label_names = sym_gen(default_bucket_key)
+        symbol, data_names, label_names = self._call_sym_gen(default_bucket_key)
         data_names = list(data_names) if data_names is not None else []
         label_names = list(label_names) if label_names is not None else []
         state_names = list(state_names) if state_names is not None else []
@@ -94,6 +95,7 @@ class BucketingModule(BaseModule):
         self._curr_bucket_key = None
         self._params_dirty = False
         self._monitor = None
+        self._grad_req = None
 
     def _reset_bind(self):
         """Internal utility function to reset binding."""
@@ -102,13 +104,17 @@ class BucketingModule(BaseModule):
         self._curr_module = None
         self._curr_bucket_key = None
 
+    def _call_sym_gen(self, *args, **kwargs):
+        with NameManager():
+            return self._sym_gen(*args, **kwargs)
+
     @property
     def data_names(self):
         """A list of names for data required by this module."""
         if self.binded:
             return self._curr_module.data_names
         else:
-            _, data_names, _ = self._sym_gen(self._default_bucket_key)
+            _, data_names, _ = self._call_sym_gen(self._default_bucket_key)
             return data_names
 
     @property
@@ -117,7 +123,7 @@ class BucketingModule(BaseModule):
         if self.binded:
             return self._curr_module.output_names
         else:
-            symbol, _, _ = self._sym_gen(self._default_bucket_key)
+            symbol, _, _ = self._call_sym_gen(self._default_bucket_key)
             return symbol.list_outputs()
 
     @property
@@ -326,8 +332,9 @@ class BucketingModule(BaseModule):
         self.for_training = for_training
         self.inputs_need_grad = inputs_need_grad
         self.binded = True
+        self._grad_req = grad_req
 
-        symbol, data_names, label_names = self._sym_gen(self._default_bucket_key)
+        symbol, data_names, label_names = self._call_sym_gen(self._default_bucket_key)
         module = Module(symbol, data_names, label_names, logger=self.logger,
                         context=self._context, work_load_list=self._work_load_list,
                         fixed_param_names=self._fixed_param_names,
@@ -335,7 +342,7 @@ class BucketingModule(BaseModule):
                         group2ctxs=self._group2ctxs,
                         compression_params=self._compression_params)
         module.bind(data_shapes, label_shapes, for_training, inputs_need_grad,
-                    force_rebind=False, shared_module=None, grad_req=grad_req)
+                    force_rebind=False, shared_module=None, grad_req=self._grad_req)
         self._curr_module = module
         self._curr_bucket_key = self._default_bucket_key
         self._buckets[self._default_bucket_key] = module
@@ -358,7 +365,7 @@ class BucketingModule(BaseModule):
         """
         assert self.binded, 'call bind before switching bucket'
         if not bucket_key in self._buckets:
-            symbol, data_names, label_names = self._sym_gen(bucket_key)
+            symbol, data_names, label_names = self._call_sym_gen(bucket_key)
             module = Module(symbol, data_names, label_names,
                             logger=self.logger, context=self._context,
                             work_load_list=self._work_load_list,
@@ -368,7 +375,8 @@ class BucketingModule(BaseModule):
                             compression_params=self._compression_params)
             module.bind(data_shapes, label_shapes, self._curr_module.for_training,
                         self._curr_module.inputs_need_grad,
-                        force_rebind=False, shared_module=self._buckets[self._default_bucket_key])
+                        force_rebind=False, shared_module=self._buckets[self._default_bucket_key],
+                        grad_req=self._grad_req)
             if self._monitor is not None:
                 module.install_monitor(self._monitor)
             self._buckets[bucket_key] = module
@@ -407,13 +415,24 @@ class BucketingModule(BaseModule):
 
         self.optimizer_initialized = True
 
-    def prepare(self, data_batch):
-        """Prepares a data batch for forward.
+    def prepare(self, data_batch, sparse_row_id_fn=None):
+        '''Prepares the module for processing a data batch.
+
+        Usually involves switching bucket and reshaping.
+        For modules that contain `row_sparse` parameters in KVStore,
+        it prepares the `row_sparse` parameters based on the sparse_row_id_fn.
 
         Parameters
         ----------
         data_batch : DataBatch
-        """
+            The current batch of data for forward computation.
+
+        sparse_row_id_fn : A callback function
+            The function  takes `data_batch` as an input and returns a dict of
+            str -> NDArray. The resulting dict is used for pulling row_sparse
+            parameters from the kvstore, where the str key is the name of the param,
+            and the value is the row id of the param to pull.
+        '''
         # perform bind if haven't done so
         assert self.binded and self.params_initialized
         bucket_key = data_batch.bucket_key
@@ -421,6 +440,7 @@ class BucketingModule(BaseModule):
         data_shapes = data_batch.provide_data
         label_shapes = data_batch.provide_label
         self.switch_bucket(bucket_key, data_shapes, label_shapes)
+        self._curr_module.prepare(data_batch, sparse_row_id_fn=sparse_row_id_fn)
         # switch back
         self.switch_bucket(original_bucket_key, None, None)
 
@@ -446,6 +466,13 @@ class BucketingModule(BaseModule):
     def update(self):
         """Updates parameters according to installed optimizer and the gradient computed
         in the previous forward-backward cycle.
+
+        When KVStore is used to update parameters for multi-device or multi-machine training,
+        a copy of the parameters are stored in KVStore. Note that for `row_sparse` parameters,
+        this function does update the copy of parameters in KVStore, but doesn't broadcast the
+        updated parameters to all devices / machines. Please call `prepare` to broadcast
+        `row_sparse` parameters with the next batch of data.
+
         """
         assert self.binded and self.params_initialized and self.optimizer_initialized
         self._params_dirty = True
@@ -493,7 +520,7 @@ class BucketingModule(BaseModule):
         assert self.binded and self.params_initialized and self.inputs_need_grad
         return self._curr_module.get_input_grads(merge_multi_context=merge_multi_context)
 
-    def update_metric(self, eval_metric, labels):
+    def update_metric(self, eval_metric, labels, pre_sliced=False):
         """Evaluates and accumulates evaluation metric on outputs of the last forward computation.
 
         Parameters
@@ -503,7 +530,7 @@ class BucketingModule(BaseModule):
             Typically ``data_batch.label``.
         """
         assert self.binded and self.params_initialized
-        self._curr_module.update_metric(eval_metric, labels)
+        self._curr_module.update_metric(eval_metric, labels, pre_sliced)
 
     @property
     def symbol(self):

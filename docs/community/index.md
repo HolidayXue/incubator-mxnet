@@ -1,18 +1,28 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 # MXNet Community
-## Questions about Using MXNet
-If you need help with using MXNet, have questions about applying it to a particular kind of problem, or have a discussion topic, please use our [forum](https://discuss.mxnet.io).
 
-## Issue Tracker
-We track bugs and new feature requests in the MXNet Github repo in the issues folder: [mxnet/issues](https://github.com/apache/incubator-mxnet/issues).
+```eval_rst
+.. toctree::
+   :maxdepth: 1
 
-## Contributors
-MXNet has been developed and is used by a group of active community members. Contribute to improving it! For more information, see [contributions](http://mxnet.io/community/contribute.html).
-
-Please join the contributor mailing list. <a href="mailto:dev-subscribe@mxnet.apache.org">[subscribe]</a>  [archive](https://lists.apache.org/list.html?dev@mxnet.apache.org)
-
-To join the MXNet slack channel send request to the contributor mailing list. 
-<a href="mailto:dev-subscribe@mxnet.apache.org">[subscribe]</a> [archive](https://the-asf.slackarchive.io/mxnet)
-
-## Roadmap
-
-MXNet is evolving fast. To see what's next and what we are working on internally, go to the [MXNet Roadmap](https://github.com/apache/incubator-mxnet/labels/Roadmap).
+   contribute.md
+   ecosystem.md
+   powered_by.md
+   mxnet_channels.md
+```

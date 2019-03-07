@@ -32,6 +32,7 @@
 #include <mxnet/ndarray.h>
 #include <mxnet/operator.h>
 #include <mxnet/operator_util.h>
+#include <mxnet/op_attr_types.h>
 #include <dmlc/logging.h>
 #include <dmlc/optional.h>
 #include <algorithm>
@@ -55,10 +56,10 @@ enum ConvolutionOpCudnnTune {kOff, kLimited, kFastest};
 }
 
 struct ConvolutionParam : public dmlc::Parameter<ConvolutionParam> {
-  TShape kernel;
-  TShape stride;
-  TShape dilate;
-  TShape pad;
+  mxnet::TShape kernel;
+  mxnet::TShape stride;
+  mxnet::TShape dilate;
+  mxnet::TShape pad;
   uint32_t num_filter;
   uint32_t num_group;
   uint64_t workspace;
@@ -68,11 +69,11 @@ struct ConvolutionParam : public dmlc::Parameter<ConvolutionParam> {
   dmlc::optional<int> layout;
   DMLC_DECLARE_PARAMETER(ConvolutionParam) {
     DMLC_DECLARE_FIELD(kernel).describe("Convolution kernel size: (w,), (h, w) or (d, h, w)");
-    DMLC_DECLARE_FIELD(stride).set_default(TShape())
+    DMLC_DECLARE_FIELD(stride).set_default(mxnet::TShape())
     .describe("Convolution stride: (w,), (h, w) or (d, h, w). Defaults to 1 for each dimension.");
-    DMLC_DECLARE_FIELD(dilate).set_default(TShape())
+    DMLC_DECLARE_FIELD(dilate).set_default(mxnet::TShape())
     .describe("Convolution dilate: (w,), (h, w) or (d, h, w). Defaults to 1 for each dimension.");
-    DMLC_DECLARE_FIELD(pad).set_default(TShape())
+    DMLC_DECLARE_FIELD(pad).set_default(mxnet::TShape())
     .describe("Zero pad for convolution: (w,), (h, w) or (d, h, w). Defaults to no padding.");
     DMLC_DECLARE_FIELD(num_filter).set_range(1, 100000)
     .describe("Convolution filter(channel) number");
@@ -102,7 +103,8 @@ struct ConvolutionParam : public dmlc::Parameter<ConvolutionParam> {
     .add_enum("NDHWC", mshadow::kNDHWC)
     .set_default(dmlc::optional<int>())
     .describe("Set layout for input, output and weight. Empty for\n    "
-              "default layout: NCW for 1d, NCHW for 2d and NCDHW for 3d.");
+              "default layout: NCW for 1d, NCHW for 2d and NCDHW for 3d."
+              "NHWC and NDHWC are only supported on GPU.");
   }
   // Adjusts kernel size for effects of dilation in the dimension `dim`.
   index_t DilatedKernelSize(int dim) const {
@@ -123,6 +125,10 @@ struct ConvolutionParam : public dmlc::Parameter<ConvolutionParam> {
            this->layout == other.layout;
   }
 };
+
+void ConvolutionParamParser(nnvm::NodeAttrs* attrs);
+
+typedef ParamOpSign<ConvolutionParam> ConvSignature;
 
 }  // namespace op
 }  // namespace mxnet
@@ -203,7 +209,7 @@ class ConvolutionOp {
       Tensor<xpu, 1, DType> workspace = ctx.requested[conv::kTempSpace]
         .get_space_typed<xpu, 1, DType>(Shape1(col_buffer_size_), s);
       // calculate the shape of col_buffer
-      TShape col_buffer_shape(num_spatial_axes_ + 1);
+      mxnet::TShape col_buffer_shape(num_spatial_axes_ + 1);
       col_buffer_shape[0] = conv_in_channels_ * param_.kernel.Size();
       for (index_t i = 1; i < col_buffer_shape.ndim(); ++i) {
         col_buffer_shape[i] = out_data[0].shape_[i+1];
@@ -289,7 +295,7 @@ class ConvolutionOp {
       Tensor<xpu, 1, DType> workspace = ctx.requested[conv::kTempSpace]
         .get_space_typed<xpu, 1, DType>(Shape1(col_buffer_size_), s);
       // calculate the shape of col_buffer
-      TShape col_buffer_shape(num_spatial_axes_ + 1);
+      mxnet::TShape col_buffer_shape(num_spatial_axes_ + 1);
       col_buffer_shape[0] = conv_in_channels_ * param_.kernel.Size();
       for (index_t i = 1; i < col_buffer_shape.ndim(); ++i) {
         col_buffer_shape[i] = out_grad[conv::kData].shape_[i+1];
@@ -333,7 +339,7 @@ class ConvolutionOp {
   }
 
  private:
-  void LayerSetUp(const TShape& ishape, const TShape& oshape) {
+  void LayerSetUp(const mxnet::TShape& ishape, const mxnet::TShape& oshape) {
     channel_axis_ = 1;  // hard code channel axis
     const index_t first_spatial_axis = channel_axis_ + 1;
     const index_t num_axes = param_.kernel.ndim() + 2;

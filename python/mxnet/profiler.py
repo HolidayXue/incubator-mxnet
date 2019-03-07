@@ -22,8 +22,13 @@
 from __future__ import absolute_import
 import ctypes
 import warnings
-from .base import _LIB, check_call, c_str, ProfileHandle, c_str_array, py_str
+from .base import _LIB, check_call, c_str, ProfileHandle, c_str_array, py_str, KVStoreHandle
 
+profiler_kvstore_handle = KVStoreHandle()
+
+def set_kvstore_handle(handle):
+    global profiler_kvstore_handle
+    profiler_kvstore_handle = handle
 
 def set_config(**kwargs):
     """Set up the configure of profiler (only accepts keyword arguments).
@@ -49,16 +54,21 @@ def set_config(**kwargs):
     aggregate_stats : boolean,
         whether to maintain aggregate stats in memory for console
         dump.  Has some negative performance impact.
+    profile_process : string
+        whether to profile kvstore `server` or `worker`.
+        server can only be profiled when kvstore is of type dist.
+        if this is not passed, defaults to `worker`
     """
     kk = kwargs.keys()
     vv = kwargs.values()
-    check_call(_LIB.MXSetProfilerConfig(len(kwargs),
-                                        c_str_array([key for key in kk]),
-                                        c_str_array([str(val) for val in vv])))
+    check_call(_LIB.MXSetProcessProfilerConfig(len(kwargs),
+                                               c_str_array([key for key in kk]),
+                                               c_str_array([str(val) for val in vv]),
+                                               profiler_kvstore_handle))
 
 
 def profiler_set_config(mode='symbolic', filename='profile.json'):
-    """Set up the configure of profiler.
+    """Set up the configure of profiler (Deprecated).
 
     Parameters
     ----------
@@ -68,15 +78,15 @@ def profiler_set_config(mode='symbolic', filename='profile.json'):
     filename : string, optional
         The name of output trace file. Defaults to 'profile.json'.
     """
-    warnings.warn('profiler.profiler_set_config() is deprecated. ' \
+    warnings.warn('profiler.profiler_set_config() is deprecated. '
                   'Please use profiler.set_config() instead')
     keys = c_str_array([key for key in ["profile_" + mode, "filename"]])
     values = c_str_array([str(val) for val in [True, filename]])
     assert len(keys) == len(values)
-    check_call(_LIB.MXSetProfilerConfig(len(keys), keys, values))
+    check_call(_LIB.MXSetProcessProfilerConfig(len(keys), keys, values, profiler_kvstore_handle))
 
 
-def set_state(state='stop'):
+def set_state(state='stop', profile_process='worker'):
     """Set up the profiler state to 'run' or 'stop'.
 
     Parameters
@@ -84,12 +94,32 @@ def set_state(state='stop'):
     state : string, optional
         Indicates whether to run the profiler, can
         be 'stop' or 'run'. Default is `stop`.
+    profile_process : string
+        whether to profile kvstore `server` or `worker`.
+        server can only be profiled when kvstore is of type dist.
+        if this is not passed, defaults to `worker`
     """
     state2int = {'stop': 0, 'run': 1}
-    check_call(_LIB.MXSetProfilerState(ctypes.c_int(state2int[state])))
+    profile_process2int = {'worker': 0, 'server': 1}
+    check_call(_LIB.MXSetProcessProfilerState(ctypes.c_int(state2int[state]),
+                                              profile_process2int[profile_process],
+                                              profiler_kvstore_handle))
 
 
-def dump(finished=True):
+def profiler_set_state(state='stop'):
+    """Set up the profiler state to 'run' or 'stop' (Deprecated).
+
+    Parameters
+    ----------
+    state : string, optional
+        Indicates whether to run the profiler, can
+        be 'stop' or 'run'. Default is `stop`.
+    """
+    warnings.warn('profiler.profiler_set_state() is deprecated. '
+                  'Please use profiler.set_state() instead')
+    set_state(state)
+
+def dump(finished=True, profile_process='worker'):
     """Dump profile and stop profiler. Use this to save profile
     in advance in case your program cannot exit normally.
 
@@ -98,15 +128,22 @@ def dump(finished=True):
     finished : boolean
         Indicates whether to stop statistic output (dumping) after this dump.
         Default is True
+    profile_process : string
+        whether to profile kvstore `server` or `worker`.
+        server can only be profiled when kvstore is of type dist.
+        if this is not passed, defaults to `worker`
     """
-    fin = 1 if finished is True else False
-    check_call(_LIB.MXDumpProfile(fin))
+    fin = 1 if finished is True else 0
+    profile_process2int = {'worker': 0, 'server': 1}
+    check_call(_LIB.MXDumpProcessProfile(fin,
+                                         profile_process2int[profile_process],
+                                         profiler_kvstore_handle))
 
 
 def dump_profile():
     """Dump profile and stop profiler. Use this to save profile
     in advance in case your program cannot exit normally."""
-    warnings.warn('profiler.dump_profile() is deprecated. ' \
+    warnings.warn('profiler.dump_profile() is deprecated. '
                   'Please use profiler.dump() instead')
     dump(True)
 
@@ -125,14 +162,37 @@ def dumps(reset=False):
     return py_str(debug_str.value)
 
 
-def pause():
-    """Pause profiling."""
-    check_call(_LIB.MXProfilePause(int(1)))
+def pause(profile_process='worker'):
+    """Pause profiling.
+
+    Parameters
+    ----------
+    profile_process : string
+        whether to profile kvstore `server` or `worker`.
+        server can only be profiled when kvstore is of type dist.
+        if this is not passed, defaults to `worker`
+    """
+    profile_process2int = {'worker': 0, 'server': 1}
+    check_call(_LIB.MXProcessProfilePause(int(1),
+                                          profile_process2int[profile_process],
+                                          profiler_kvstore_handle))
 
 
-def resume():
-    """Resume paused profiling."""
-    check_call(_LIB.MXProfilePause(int(0)))
+def resume(profile_process='worker'):
+    """
+    Resume paused profiling.
+
+    Parameters
+    ----------
+    profile_process : string
+        whether to profile kvstore `server` or `worker`.
+        server can only be profiled when kvstore is of type dist.
+        if this is not passed, defaults to `worker`
+    """
+    profile_process2int = {'worker': 0, 'server': 1}
+    check_call(_LIB.MXProcessProfilePause(int(0),
+                                          profile_process2int[profile_process],
+                                          profiler_kvstore_handle))
 
 
 class Domain(object):

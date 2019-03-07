@@ -1,3 +1,20 @@
+<!--- Licensed to the Apache Software Foundation (ASF) under one -->
+<!--- or more contributor license agreements.  See the NOTICE file -->
+<!--- distributed with this work for additional information -->
+<!--- regarding copyright ownership.  The ASF licenses this file -->
+<!--- to you under the Apache License, Version 2.0 (the -->
+<!--- "License"); you may not use this file except in compliance -->
+<!--- with the License.  You may obtain a copy of the License at -->
+
+<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
+
+<!--- Unless required by applicable law or agreed to in writing, -->
+<!--- software distributed under the License is distributed on an -->
+<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
+<!--- KIND, either express or implied.  See the License for the -->
+<!--- specific language governing permissions and limitations -->
+<!--- under the License. -->
+
 # Iterators - Loading data
 In this tutorial, we focus on how to feed data into a training or inference program.
 Most training and inference modules in MXNet accept data iterators,
@@ -15,14 +32,9 @@ To complete this tutorial, we need:
 ```
 $ pip install opencv-python requests matplotlib jupyter
 ```
-- Set the environment variable `MXNET_HOME` to the root of the MXNet source folder.  
 
-```
-$ git clone https://github.com/dmlc/mxnet ~/mxnet
-$ export MXNET_HOME='~/mxnet'
-```
+## MXNet Data Iterator
 
-## MXNet Data Iterator  
 Data Iterators in *MXNet* are similar to Python iterator objects.
 In Python, the function `iter` allows fetching items sequentially by calling  `next()` on
  iterable objects such as a Python `list`.
@@ -61,6 +73,11 @@ we can use the [__`NDArrayIter`__](http://mxnet.io/api/python/io/io.html#mxnet.i
 
 ```python
 import numpy as np
+
+# fix the seed
+np.random.seed(42)
+mx.random.seed(42)
+
 data = np.random.rand(100,3)
 label = np.random.randint(0, 10, (100,))
 data_iter = mx.io.NDArrayIter(data=data, label=label, batch_size=30)
@@ -313,8 +330,10 @@ print(mx.recordio.unpack_img(s))
 ```
 
 #### Using tools/im2rec.py
-You can also convert raw images into *RecordIO* format using the ``im2rec.py`` utility script that is provided in the MXNet [src/tools](https://github.com/dmlc/mxnet/tree/master/tools) folder.
+You can also convert raw images into *RecordIO* format using the [__im2rec.py__](https://github.com/apache/incubator-mxnet/blob/master/tools/im2rec.py) utility script that is provided in the MXNet [src/tools](https://github.com/dmlc/mxnet/tree/master/tools) folder.
 An example of how to use the script for converting to *RecordIO* format is shown in the `Image IO` section below.
+
+* Note that there is a C++ API implementation of [im2rec](https://github.com/dmlc/mxnet/blob/master/tools/im2rec.cc), please refer to [RecordIO FAQ](https://mxnet.incubator.apache.org/faq/recordio.html) for more information.
 
 ## Image IO
 
@@ -341,7 +360,7 @@ Let's download sample images that we can work with.
 ```python
 fname = mx.test_utils.download(url='http://data.mxnet.io/data/test_images.tar.gz', dirname='data', overwrite=False)
 tar = tarfile.open(fname)
-tar.extractall(path='./data')
+tar.extractall(path=os.path.join('.','data'))
 tar.close()
 ```
 
@@ -351,7 +370,7 @@ tar.close()
 **Note:** You will still need ``OpenCV``(not the CV2 Python library) installed to use `mx.image.imdecode`.
 
 ```python
-img = mx.image.imdecode(open('data/test_images/ILSVRC2012_val_00000001.JPEG', 'rb').read())
+img = mx.image.imdecode(open(os.path.join('data','test_images','ILSVRC2012_val_00000001.JPEG'), 'rb').read())
 plt.imshow(img.asnumpy()); plt.show()
 ```
 
@@ -382,7 +401,7 @@ Download and unzip
 ```python
 fname = mx.test_utils.download(url='http://www.vision.caltech.edu/Image_Datasets/Caltech101/101_ObjectCategories.tar.gz', dirname='data', overwrite=False)
 tar = tarfile.open(fname)
-tar.extractall(path='./data')
+tar.extractall(path=os.path.join('.','data'))
 tar.close()
 ```
 
@@ -392,7 +411,13 @@ Now let's convert them into record io format using the `im2rec.py` utility scrip
 First, we need to make a list that contains all the image files and their categories:
 
 ```python
-os.system('python %s/tools/im2rec.py --list --recursive --test-ratio=0.2 data/caltech data/101_ObjectCategories'%os.environ['MXNET_HOME'])
+im2rec_path = mx.test_utils.get_im2rec_path()
+data_path = os.path.join('data','101_ObjectCategories')
+prefix_path = os.path.join('data','caltech')
+
+with open(os.devnull, 'wb') as devnull:
+    subprocess.check_call(['python', im2rec_path, '--list', '--recursive', '--test-ratio=0.2', prefix_path, data_path],
+                          stdout=devnull)
 ```
 
 The resulting list file (./data/caltech_train.lst) is in the format `index\t(one or more label)\tpath`. In this case, there is only one label for each image but you can modify the list to add in more for multi-label training.
@@ -401,7 +426,9 @@ Then we can use this list to create our record io file:
 
 
 ```python
-os.system("python %s/tools/im2rec.py --num-thread=4 --pass-through data/caltech data/101_ObjectCategories"%os.environ['MXNET_HOME'])
+with open(os.devnull, 'wb') as devnull:
+    subprocess.check_call(['python', im2rec_path, '--num-thread=4', '--pass-through', '--test-ratio=0.2', prefix_path, data_path],
+                          stdout=devnull)
 ```
 
 The record io files are now saved at here (./data)
@@ -412,7 +439,7 @@ The record io files are now saved at here (./data)
 
 ```python
 data_iter = mx.io.ImageRecordIter(
-    path_imgrec="./data/caltech.rec", # the target record file
+    path_imgrec=os.path.join('.','data','caltech.rec'),
     data_shape=(3, 227, 227), # output data shape. An 227x227 region will be cropped from the original image.
     batch_size=4, # number of samples per batch
     resize=256 # resize the shorter edge to 256 before cropping
@@ -433,8 +460,8 @@ plt.show()
 
 ```python
 data_iter = mx.image.ImageIter(batch_size=4, data_shape=(3, 227, 227),
-                              path_imgrec="./data/caltech.rec",
-                              path_imgidx="./data/caltech.idx" )
+                              path_imgrec=os.path.join('.','data','caltech.rec'),
+                              path_imgidx=os.path.join('.','data','caltech.idx') )
 data_iter.reset()
 batch = data_iter.next()
 data = batch.data[0]

@@ -35,6 +35,7 @@
 #include "../operator_common.h"
 #include "../elemwise_op_common.h"
 #include "../linalg.h"
+#include "../../common/utils.h"
 
 namespace mxnet {
 namespace op {
@@ -60,6 +61,11 @@ struct FullyConnectedParam : public dmlc::Parameter<FullyConnectedParam> {
     DMLC_DECLARE_FIELD(flatten).set_default(true)
     .describe("Whether to collapse all but the first axis of the input data tensor.");
   }
+  bool operator==(const FullyConnectedParam& other) const {
+    return this->num_hidden == other.num_hidden &&
+           this->no_bias == other.no_bias &&
+           this->flatten == other.flatten;
+  }
 };
 
 template<typename xpu, typename DType>
@@ -78,8 +84,8 @@ void FCForward(const OpContext &ctx, const FullyConnectedParam &param,
   CHECK_EQ(s->blas_handle_ownership_, Stream<xpu>::OwnHandle)
       << "Must init CuBLAS handle in stream";
 #endif  // __CUDACC__
-  const TShape& ishape = in_data[fullc::kData].shape_;
-  const TShape& oshape = out_data[fullc::kOut].shape_;
+  const mxnet::TShape& ishape = in_data[fullc::kData].shape_;
+  const mxnet::TShape& oshape = out_data[fullc::kOut].shape_;
 
   Tensor<xpu, 2, DType> wmat = in_data[fullc::kWeight].get<xpu, 2, DType>(s);
   Tensor<xpu, 2, DType> data, out;
@@ -95,11 +101,20 @@ void FCForward(const OpContext &ctx, const FullyConnectedParam &param,
         Shape2(oshape[0], oshape.ProdShape(1, oshape.ndim())), s);
   }
 
+  CHECK_EQ(data.shape_[1], wmat.shape_[1])
+    << "Incomplete weight tensor detected: weight.data().shape[1] != prod(data.data().shape[1:])."
+       " This is not supported by FCForward. If weight is in row_sparse format,"
+       " please make sure all row ids are present.";
   // Legacy approach shown here for comparison:
   //   out = dot(data, wmat.T());
   linalg_gemm(data, wmat, out, false, true, s);
   if (!param.no_bias) {
-    Tensor<xpu, 1, DType> bias = in_data[fullc::kBias].get<xpu, 1, DType>(s);
+    Tensor<xpu, 1, DType> bias = in_data[fullc::kBias].get_with_shape<xpu, 1, DType>(
+      Shape1(wmat.shape_[0]), s);
+    CHECK_EQ(bias.shape_[0], wmat.shape_[0])
+      << "Incomplete bias tensor detected: bias.data().shape[1] != weight.data().shape[0]."
+         " This is not supported by FCForward. If bias is in row_sparse format, please"
+         " make sure all row ids are present.";
     out += repmat(bias, data.size(0));
   }
 }
@@ -113,8 +128,8 @@ void FCBackward(const OpContext &ctx, const FullyConnectedParam &param,
   // TODO(bing): check the BLAS Handle, be careful
   //  maybe need blas handle from context
   Stream<xpu> *s = ctx.get_stream<xpu>();
-  const TShape& ishape = in_data[fullc::kData].shape_;
-  const TShape& oshape = out_grad[fullc::kOut].shape_;
+  const mxnet::TShape& ishape = in_data[fullc::kData].shape_;
+  const mxnet::TShape& oshape = out_grad[fullc::kOut].shape_;
 
   Tensor<xpu, 2, DType> wmat = in_data[fullc::kWeight].get<xpu, 2, DType>(s);
   Tensor<xpu, 2, DType> data, grad, gdata;
@@ -218,4 +233,16 @@ void FullyConnectedGradCompute(const nnvm::NodeAttrs& attrs,
 
 }  // namespace op
 }  // namespace mxnet
+namespace std {
+template<>
+struct hash<mxnet::op::FullyConnectedParam> {
+  size_t operator()(const mxnet::op::FullyConnectedParam& val) {
+    size_t ret = 0;
+    ret = dmlc::HashCombine(ret, val.num_hidden);
+    ret = dmlc::HashCombine(ret, val.no_bias);
+    ret = dmlc::HashCombine(ret, val.flatten);
+    return ret;
+  }
+};
+}  // namespace std
 #endif  // MXNET_OPERATOR_NN_FULLY_CONNECTED_INL_H_
